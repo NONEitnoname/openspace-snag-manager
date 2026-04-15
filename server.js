@@ -123,6 +123,8 @@ app.all('/proxy/os/:host/{*path}', (req, res) => {
   delete options.headers['x-forwarded-for'];
   delete options.headers['x-forwarded-proto'];
   delete options.headers['x-forwarded-host'];
+  // Request uncompressed so we can rewrite HTML
+  delete options.headers['accept-encoding'];
 
   const proxyReq = https.request(options, (proxyRes) => {
     // Strip frame-blocking headers
@@ -149,8 +151,29 @@ app.all('/proxy/os/:host/{*path}', (req, res) => {
         .map(c => c.replace(/;\s*[Dd]omain=[^;]*/g, '').replace(/;\s*[Ss]ecure/g, ''));
     }
 
-    res.writeHead(proxyRes.statusCode, headers);
-    proxyRes.pipe(res);
+    // For HTML responses, inject <base> tag so all relative/absolute URLs
+    // (CSS, JS, images, API calls) route through our proxy
+    const contentType = headers['content-type'] || '';
+    if (contentType.includes('text/html')) {
+      const chunks = [];
+      proxyRes.on('data', c => chunks.push(c));
+      proxyRes.on('end', () => {
+        let html = Buffer.concat(chunks).toString('utf-8');
+        const baseTag = `<base href="/proxy/os/${host}/">`;
+        // Inject <base> right after <head>
+        html = html.replace(/<head([^>]*)>/i, `<head$1>${baseTag}`);
+        // Also rewrite any absolute URLs to this host in src/href attributes
+        html = html.replace(new RegExp(`https://${host.replace(/\./g, '\\.')}`, 'g'), `/proxy/os/${host}`);
+        // Remove content-length since we changed the body
+        delete headers['content-length'];
+        delete headers['content-encoding']; // base tag changes may break gzip
+        res.writeHead(proxyRes.statusCode, headers);
+        res.end(html);
+      });
+    } else {
+      res.writeHead(proxyRes.statusCode, headers);
+      proxyRes.pipe(res);
+    }
   });
 
   proxyReq.on('error', (err) => {
