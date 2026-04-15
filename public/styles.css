@@ -645,6 +645,91 @@ body {
   .header-title { font-size: 16px; }
 }
 
+/* OpenSpace connect overlay */
+.viewer-toolbar-spacer { flex: 1; }
+
+.os-connect-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(0,0,0,0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 50;
+}
+
+.os-connect-box {
+  background: white;
+  border-radius: 12px;
+  padding: 28px;
+  max-width: 480px;
+  width: 90%;
+  box-shadow: var(--shadow-lg);
+}
+
+.os-connect-box h3 {
+  font-family: 'Playfair Display', serif;
+  font-size: 18px;
+  margin-bottom: 6px;
+}
+
+.os-connect-box > p {
+  font-size: 13px;
+  color: var(--text-muted);
+  margin-bottom: 16px;
+}
+
+.os-connect-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.os-connect-actions .submit-btn,
+.os-connect-actions .cancel-btn {
+  flex: 1;
+  margin-top: 0;
+}
+
+.os-connect-hint {
+  margin-top: 16px;
+  padding: 10px 12px;
+  background: #f0f9ff;
+  border-radius: 6px;
+  font-size: 11px;
+  color: #0369a1;
+  line-height: 1.5;
+}
+
+.os-status {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  font-family: 'DM Mono', monospace;
+}
+
+.os-status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #16a34a;
+}
+
+.os-status-dot.disconnected { background: #999; }
+
+/* Scan result cards */
+.scan-result-card {
+  background: white;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px;
+  margin-bottom: 8px;
+  box-shadow: var(--shadow);
+}
+
+.scan-result-card:hover { box-shadow: var(--shadow-lg); }
+
 /* Empty state */
 .empty-state {
   text-align: center;

@@ -23,10 +23,32 @@
     <div class="viewer-panel">
       <div class="viewer-toolbar">
         <span>360° Site Capture</span>
-        <button onclick="toggleViewerFull()">⤢ Expand</button>
-        <button onclick="openOriginal()">↗ Open Original</button>
+        <div class="viewer-toolbar-spacer"></div>
+        <button onclick="showOsConnect()" id="osConnectBtn">Connect OpenSpace</button>
+        <button onclick="toggleViewerFull()">Expand</button>
+        <button onclick="openOriginal()">Open in Tab</button>
       </div>
       <div class="viewer-frame" id="viewerFrame"></div>
+
+      <!-- OpenSpace connect overlay -->
+      <div class="os-connect-overlay" id="osConnectOverlay" style="display:none">
+        <div class="os-connect-box">
+          <h3>Connect to OpenSpace</h3>
+          <p>Paste your OpenSpace share link to load the 360° viewer.</p>
+          <div class="form-group">
+            <label>OpenSpace URL</label>
+            <input type="url" id="osUrlInput" placeholder="https://ksa.openspace.ai/ohplayer?site=...">
+          </div>
+          <div class="os-connect-actions">
+            <button class="submit-btn" onclick="connectOpenSpace()">Load Viewer</button>
+            <button class="cancel-btn" onclick="hideOsConnect()">Cancel</button>
+          </div>
+          <div class="os-connect-hint">
+            <strong>How to get your link:</strong> In OpenSpace, navigate to the capture you want, click <em>Share</em>, and copy the link.
+            Supported: ksa.openspace.ai, app.openspace.ai, eu.openspace.ai
+          </div>
+        </div>
+      </div>
     </div>
 
     <!-- Snag Panel -->
@@ -34,6 +56,7 @@
       <div class="tabs">
         <div class="tab active" data-tab="form" onclick="switchTab('form')">+ Log Snag</div>
         <div class="tab" data-tab="list" onclick="switchTab('list')">Snag List</div>
+        <div class="tab" data-tab="scan" onclick="switchTab('scan')">AI Scan</div>
       </div>
 
       <!-- Form Tab -->
@@ -167,6 +190,31 @@
           </div>
           <div class="showing-count" id="showingCount"></div>
           <div class="snag-list" id="snagList"></div>
+        </div>
+      </div>
+
+      <!-- AI Scan Tab -->
+      <div class="tab-content" id="tab-scan">
+        <div class="form-container">
+          <h3 style="font-family:'Playfair Display',serif;font-size:16px;margin-bottom:4px">AI Defect Scanner</h3>
+          <p style="font-size:12px;color:var(--text-muted);margin-bottom:16px">
+            Upload site photos or screenshots from OpenSpace. MimaarAI will analyze them for construction defects and automatically create snag entries.
+          </p>
+
+          <div class="form-group">
+            <label>Site Photos / Screenshots</label>
+            <div class="photo-upload" onclick="document.getElementById('f-scanphotos').click()">
+              Upload site photos for AI analysis
+              <input type="file" id="f-scanphotos" multiple accept="image/*">
+            </div>
+            <div class="photo-thumbnails" id="scanPhotoThumbnails"></div>
+          </div>
+
+          <button class="ai-btn" id="aiScanBtn" onclick="aiScanPhotos()">
+            AI Scan for Snags (MimaarAI)
+          </button>
+
+          <div id="scanResults"></div>
         </div>
       </div>
     </div>

@@ -41,21 +41,38 @@ const upload = multer({
   }
 });
 
-// OpenSpace proxy
-const OPENSPACE_URL = 'https://ksa.openspace.ai/ohplayer?site=clQN_W4eSIqNUhIF-qCM-Q&bright=0&capture=MHmdrOblSVqiihnW5XEnww&pano=aoB9N6xnWayjdTuJkNW_iA&sheet=5l7yKKmdRF6P7pfoUQfgtQ&shadow=0&sharp=0&attitude=-0.7071%2C0%2C0%2C-0.7071&fov=1.33&pos=32.9045%2C-15.5963%2C1.6442';
+// OpenSpace proxy — proxies ALL paths under /proxy/os/<host>/... to the actual OpenSpace host
+// Supports any OpenSpace region: ksa.openspace.ai, app.openspace.ai, etc.
+const ALLOWED_OS_HOSTS = ['ksa.openspace.ai', 'app.openspace.ai', 'eu.openspace.ai', 'openspace.ai'];
 
-app.use('/proxy/openspace', createProxyMiddleware({
-  target: 'https://ksa.openspace.ai',
+app.use('/proxy/os', (req, res, next) => {
+  // Extract target host from path: /proxy/os/ksa.openspace.ai/ohplayer?...
+  const pathAfterProxy = req.url.slice(1); // remove leading /
+  const slashIdx = pathAfterProxy.indexOf('/');
+  const host = slashIdx > -1 ? pathAfterProxy.slice(0, slashIdx) : pathAfterProxy;
+  const remaining = slashIdx > -1 ? pathAfterProxy.slice(slashIdx) : '/';
+
+  if (!ALLOWED_OS_HOSTS.includes(host)) {
+    return res.status(400).json({ error: 'Invalid OpenSpace host' });
+  }
+
+  req._osTarget = `https://${host}`;
+  req._osPath = remaining;
+  next();
+}, createProxyMiddleware({
+  router: (req) => req._osTarget,
   changeOrigin: true,
-  pathRewrite: (p) => {
-    const url = new URL(OPENSPACE_URL);
-    return url.pathname + url.search;
-  },
+  pathRewrite: (p, req) => req._osPath,
+  followRedirects: true,
   on: {
-    proxyRes: (proxyRes) => {
+    proxyRes: (proxyRes, req, res) => {
+      // Strip all frame-blocking headers so iframe works
       delete proxyRes.headers['x-frame-options'];
       delete proxyRes.headers['content-security-policy'];
+      delete proxyRes.headers['content-security-policy-report-only'];
       delete proxyRes.headers['x-content-type-options'];
+      // Allow cross-origin for assets
+      proxyRes.headers['access-control-allow-origin'] = '*';
     }
   }
 }));
@@ -244,6 +261,84 @@ Return exactly this JSON structure: {"category":"one of: Structural, MEP, Finish
   }
 
   res.status(503).json({ error: 'AI categorization unavailable. Both MimaarAI models failed.' });
+});
+
+// AI Scan — vision-based defect detection from site photos
+app.post('/api/snags/ai-scan', async (req, res) => {
+  const { attachments } = req.body;
+  if (!attachments || attachments.length === 0) {
+    return res.status(400).json({ error: 'At least one photo is required' });
+  }
+
+  const prompt = `You are a construction QA/QC expert inspecting a building site. Analyze these photos for construction defects, snags, and quality issues.
+
+For EACH defect you find, return a JSON object. Respond ONLY with a valid JSON array (no markdown, no code fences, no explanation).
+
+Each object must have:
+{"title":"short defect name","description":"detailed description of the defect, location in image, severity","category":"one of: Structural, MEP, Finishing, Safety, Waterproofing, Electrical, Plumbing, HVAC, Fire Protection, Painting, Flooring, Ceiling, Doors & Windows, Facade, Landscaping, Other","priority":"Critical|High|Medium|Low","trade":"responsible trade","rootCause":"likely cause","recommendation":"fix recommendation","effort":"Minor (<1hr)|Moderate (1-4hrs)|Major (4-8hrs)|Extensive (>8hrs)","location":"location in the image/area"}
+
+If no defects are found, return an empty array: []
+Be thorough — check for cracks, water damage, missing items, misalignment, incomplete work, safety hazards, MEP issues, finish quality, etc.`;
+
+  // Use mimarai-pro (Gemini vision) first, then mimarai-advanced
+  const models = ['mimarai-pro', 'mimarai-advanced'];
+
+  for (const model of models) {
+    try {
+      const response = await fetch('https://mimarai.com/api/chat/enhanced', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Session-ID': `snag-scan-${Date.now()}`
+        },
+        body: JSON.stringify({
+          message: prompt,
+          sessionId: `snag-scan-${Date.now()}`,
+          model,
+          temperature: 0.4,
+          attachments: attachments.map(a => ({
+            type: a.type || 'image/jpeg',
+            data: a.data,
+            name: a.name || 'site-photo.jpg'
+          })),
+          engineeringContext: {
+            sbcMode: true,
+            stream: 'structural',
+            type: 'qa_qc'
+          }
+        })
+      });
+
+      if (!response.ok) {
+        console.log(`MimaarAI ${model} scan returned ${response.status}, trying fallback...`);
+        continue;
+      }
+
+      const data = await response.json();
+      const content = data.content || '';
+
+      // Extract JSON array from response
+      const arrayMatch = content.match(/\[[\s\S]*\]/);
+      if (!arrayMatch) {
+        // Check if it's a single object
+        const objMatch = content.match(/\{[\s\S]*\}/);
+        if (objMatch) {
+          const single = JSON.parse(objMatch[0]);
+          return res.json({ success: true, model, snags: [single] });
+        }
+        console.log(`MimaarAI ${model} scan returned non-JSON, trying fallback...`);
+        continue;
+      }
+
+      const snags = JSON.parse(arrayMatch[0]);
+      return res.json({ success: true, model, snags: Array.isArray(snags) ? snags : [snags] });
+    } catch (err) {
+      console.error(`MimaarAI ${model} scan error:`, err.message);
+      continue;
+    }
+  }
+
+  res.status(503).json({ error: 'AI scan unavailable. Both MimaarAI models failed.' });
 });
 
 app.listen(PORT, () => {
