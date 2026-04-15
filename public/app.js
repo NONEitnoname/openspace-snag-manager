@@ -23,62 +23,74 @@ document.addEventListener('DOMContentLoaded', () => {
 // OpenSpace Viewer
 // ────────────────────────────────────────────
 
+let osPopup = null;
+
 function initViewer() {
   const saved = localStorage.getItem('openspace_url');
-  if (saved) {
-    currentOsUrl = saved;
-    loadIframe(saved);
-  } else {
-    showViewerWelcome();
-  }
+  if (saved) currentOsUrl = saved;
+  renderViewerPanel();
 }
 
-function osUrlToProxy(osUrl) {
-  try {
-    const u = new URL(osUrl);
-    return `/proxy/os/${u.host}${u.pathname}${u.search}`;
-  } catch { return null; }
-}
-
-function loadIframe(url) {
-  currentOsUrl = url;
-  localStorage.setItem('openspace_url', url);
-  const proxyUrl = osUrlToProxy(url);
-  if (!proxyUrl) { toast('Invalid OpenSpace URL', 'error'); return; }
-
+function renderViewerPanel() {
   const frame = document.getElementById('viewerFrame');
-  frame.innerHTML = '';
-  const iframe = document.createElement('iframe');
-  iframe.src = proxyUrl;
-  iframe.setAttribute('allow', 'fullscreen');
-  iframe.style.width = '100%';
-  iframe.style.height = '100%';
-  iframe.style.border = 'none';
-  frame.appendChild(iframe);
-  updateOsStatus(true);
-}
+  const hasUrl = !!currentOsUrl;
 
-function showViewerWelcome() {
-  const frame = document.getElementById('viewerFrame');
   frame.innerHTML = `
     <div class="viewer-hub">
       <div class="viewer-hub-header">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="width:48px;height:48px;opacity:0.5;margin-bottom:8px"><circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="width:40px;height:40px;opacity:0.4;margin-bottom:8px"><circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
         <h3>OpenSpace 360° Viewer</h3>
-        <p>Set your OpenSpace URL to load the viewer inline. You can log in with your OpenSpace credentials directly in the viewer pane.</p>
+        ${hasUrl
+          ? '<p>Your OpenSpace link is saved. Click below to open the viewer, then screenshot + paste to analyze.</p>'
+          : '<p>Paste your OpenSpace share link to get started.</p>'}
       </div>
-      <button class="viewer-hub-btn primary" onclick="showOsConnect()">Set OpenSpace URL</button>
+
+      <div class="viewer-hub-actions">
+        ${hasUrl ? `
+          <button class="viewer-hub-btn primary" onclick="launchOpenSpace()">
+            Open OpenSpace Viewer
+          </button>
+          <button class="viewer-hub-btn" onclick="showOsConnect()">Change URL</button>
+        ` : `
+          <button class="viewer-hub-btn primary" onclick="showOsConnect()">Set OpenSpace URL</button>
+        `}
+      </div>
+
+      ${hasUrl ? `
+      <div class="viewer-hub-workflow">
+        <h4>Quick Defect Scan</h4>
+        <div class="workflow-steps">
+          <div class="workflow-step"><div class="step-num">1</div><div><strong>Open Viewer</strong> above — navigate to area</div></div>
+          <div class="workflow-step"><div class="step-num">2</div><div><strong>Screenshot</strong> — press <kbd>Win+Shift+S</kbd></div></div>
+          <div class="workflow-step"><div class="step-num">3</div><div><strong>Paste</strong> — press <kbd>Ctrl+V</kbd> here. AI scans automatically.</div></div>
+        </div>
+      </div>
+
+      <div class="viewer-hub-paste" tabindex="0">
+        Paste screenshot here (Ctrl+V) — AI scans instantly
+      </div>
+      ` : ''}
     </div>`;
-  updateOsStatus(false);
+
+  updateOsStatus(hasUrl);
+}
+
+function launchOpenSpace() {
+  if (!currentOsUrl) return showOsConnect();
+  // Open in popup window positioned to the left of the snag panel
+  const w = Math.floor(screen.width * 0.6);
+  const h = screen.height;
+  osPopup = window.open(currentOsUrl, 'openspace_viewer', `width=${w},height=${h},left=0,top=0,toolbar=no,menubar=no`);
+  if (!osPopup) {
+    // Popup blocked — open in new tab instead
+    window.open(currentOsUrl, '_blank');
+  }
+  toast('OpenSpace opened — screenshot + Ctrl+V to scan', 'success');
 }
 
 function updateOsStatus(connected) {
   const btn = document.getElementById('osConnectBtn');
-  if (connected) {
-    btn.innerHTML = 'Change URL';
-  } else {
-    btn.innerHTML = 'Connect OpenSpace';
-  }
+  btn.innerHTML = connected ? 'Change URL' : 'Connect OpenSpace';
 }
 
 function showOsConnect() {
@@ -109,8 +121,10 @@ function connectOpenSpace() {
   }
 
   hideOsConnect();
-  loadIframe(url);
-  toast('Loading OpenSpace viewer...', 'success');
+  currentOsUrl = url;
+  localStorage.setItem('openspace_url', url);
+  renderViewerPanel();
+  toast('OpenSpace URL saved! Click "Open OpenSpace Viewer" to launch.', 'success');
 }
 
 function toggleViewerFull() {
@@ -118,7 +132,7 @@ function toggleViewerFull() {
 }
 
 function openOriginal() {
-  window.open(currentOsUrl || DEFAULT_OS_URL, '_blank');
+  launchOpenSpace();
 }
 
 // ────────────────────────────────────────────

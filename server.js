@@ -336,6 +336,7 @@ Return exactly this JSON structure: {"category":"one of: Structural, MEP, Finish
           sessionId: `snag-categorize-${Date.now()}`,
           model,
           temperature: 0.3,
+          extendedThinking: { enabled: false, depth: 'quick', showThinking: false },
           engineeringContext: {
             sbcMode: true,
             stream: 'structural',
@@ -406,6 +407,7 @@ Be thorough — check for cracks, water damage, missing items, misalignment, inc
           sessionId: `snag-scan-${Date.now()}`,
           model,
           temperature: 0.4,
+          extendedThinking: { enabled: false, depth: 'quick', showThinking: false },
           attachments: attachments.map(a => ({
             type: a.type || 'image/jpeg',
             data: a.data,
