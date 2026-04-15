@@ -5,7 +5,6 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 const PDFDocument = require('pdfkit');
-const { createProxyMiddleware } = require('http-proxy-middleware');
 const db = require('./db/database');
 
 const app = express();
@@ -91,98 +90,6 @@ function mimaraiHeaders(req) {
   }
   return headers;
 }
-
-// OpenSpace proxy — proxies ALL paths under /proxy/os/<host>/... to the actual OpenSpace host
-const ALLOWED_OS_HOSTS = ['ksa.openspace.ai', 'app.openspace.ai', 'eu.openspace.ai', 'openspace.ai'];
-const https = require('https');
-
-app.all('/proxy/os/:host/{*path}', (req, res) => {
-  const host = req.params.host;
-  if (!ALLOWED_OS_HOSTS.includes(host)) {
-    return res.status(400).json({ error: 'Invalid OpenSpace host' });
-  }
-
-  // Build target path from named params
-  const remainingPath = req.params.path || '';
-  const qs = req._parsedUrl?.search || '';
-  const targetPath = '/' + remainingPath + qs;
-
-  const options = {
-    hostname: host,
-    port: 443,
-    path: targetPath,
-    method: req.method,
-    headers: {
-      ...req.headers,
-      host: host,
-      referer: `https://${host}/`,
-      origin: `https://${host}`,
-    }
-  };
-  // Remove headers that would confuse the upstream
-  delete options.headers['x-forwarded-for'];
-  delete options.headers['x-forwarded-proto'];
-  delete options.headers['x-forwarded-host'];
-  // Request uncompressed so we can rewrite HTML
-  delete options.headers['accept-encoding'];
-
-  const proxyReq = https.request(options, (proxyRes) => {
-    // Strip frame-blocking headers
-    const headers = { ...proxyRes.headers };
-    delete headers['x-frame-options'];
-    delete headers['content-security-policy'];
-    delete headers['content-security-policy-report-only'];
-    delete headers['x-content-type-options'];
-    headers['access-control-allow-origin'] = '*';
-
-    // Rewrite redirect locations to stay within our proxy
-    if (headers.location) {
-      try {
-        const loc = new URL(headers.location, `https://${host}`);
-        if (ALLOWED_OS_HOSTS.includes(loc.hostname)) {
-          headers.location = `/proxy/os/${loc.hostname}${loc.pathname}${loc.search}`;
-        }
-      } catch {}
-    }
-
-    // Rewrite Set-Cookie domains so cookies work through proxy
-    if (headers['set-cookie']) {
-      headers['set-cookie'] = (Array.isArray(headers['set-cookie']) ? headers['set-cookie'] : [headers['set-cookie']])
-        .map(c => c.replace(/;\s*[Dd]omain=[^;]*/g, '').replace(/;\s*[Ss]ecure/g, ''));
-    }
-
-    // For HTML responses, inject <base> tag so all relative/absolute URLs
-    // (CSS, JS, images, API calls) route through our proxy
-    const contentType = headers['content-type'] || '';
-    if (contentType.includes('text/html')) {
-      const chunks = [];
-      proxyRes.on('data', c => chunks.push(c));
-      proxyRes.on('end', () => {
-        let html = Buffer.concat(chunks).toString('utf-8');
-        const baseTag = `<base href="/proxy/os/${host}/">`;
-        // Inject <base> right after <head>
-        html = html.replace(/<head([^>]*)>/i, `<head$1>${baseTag}`);
-        // Also rewrite any absolute URLs to this host in src/href attributes
-        html = html.replace(new RegExp(`https://${host.replace(/\./g, '\\.')}`, 'g'), `/proxy/os/${host}`);
-        // Remove content-length since we changed the body
-        delete headers['content-length'];
-        delete headers['content-encoding']; // base tag changes may break gzip
-        res.writeHead(proxyRes.statusCode, headers);
-        res.end(html);
-      });
-    } else {
-      res.writeHead(proxyRes.statusCode, headers);
-      proxyRes.pipe(res);
-    }
-  });
-
-  proxyReq.on('error', (err) => {
-    console.error('Proxy error:', err.message);
-    res.status(502).json({ error: 'Failed to connect to OpenSpace' });
-  });
-
-  req.pipe(proxyReq);
-});
 
 // Health check
 app.get('/api/health', (req, res) => {
