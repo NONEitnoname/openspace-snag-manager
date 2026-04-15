@@ -80,6 +80,22 @@ app.use('/proxy/os/:host', (req, res) => {
     delete headers['x-content-type-options'];
     headers['access-control-allow-origin'] = '*';
 
+    // Rewrite redirect locations to stay within our proxy
+    if (headers.location) {
+      try {
+        const loc = new URL(headers.location, `https://${host}`);
+        if (ALLOWED_OS_HOSTS.includes(loc.hostname)) {
+          headers.location = `/proxy/os/${loc.hostname}${loc.pathname}${loc.search}`;
+        }
+      } catch {}
+    }
+
+    // Rewrite Set-Cookie domains so cookies work through proxy
+    if (headers['set-cookie']) {
+      headers['set-cookie'] = (Array.isArray(headers['set-cookie']) ? headers['set-cookie'] : [headers['set-cookie']])
+        .map(c => c.replace(/;\s*[Dd]omain=[^;]*/g, '').replace(/;\s*[Ss]ecure/g, ''));
+    }
+
     res.writeHead(proxyRes.statusCode, headers);
     proxyRes.pipe(res);
   });
