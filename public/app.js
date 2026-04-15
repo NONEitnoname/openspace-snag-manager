@@ -4,12 +4,17 @@ let allSnags = [];
 let totalSnags = 0;
 let selectedPhotos = [];
 let currentOsUrl = null;
+let mimaraiToken = localStorage.getItem('mimarai_token');
+let mimaraiUser = JSON.parse(localStorage.getItem('mimarai_user') || 'null');
+let pastedImages = []; // images pasted via Ctrl+V
 
 // Init
 document.addEventListener('DOMContentLoaded', () => {
   initViewer();
   loadStats();
   loadSnags();
+  initPasteListener();
+  updateAuthUI();
   document.getElementById('f-photos').addEventListener('change', handlePhotoSelect);
   document.getElementById('f-scanphotos').addEventListener('change', handleScanPhotoSelect);
 });
@@ -397,7 +402,7 @@ async function aiCategorize() {
   try {
     const res = await fetch('/api/snags/ai-categorize', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: mimaraiHeaders(),
       body: JSON.stringify({ description: desc })
     });
     const data = await res.json();
@@ -439,7 +444,8 @@ function handleScanPhotoSelect(e) {
 }
 
 async function aiScanPhotos() {
-  if (scanPhotos.length === 0) return toast('Upload site photos first', 'error');
+  const allPhotos = [...pastedImages, ...scanPhotos];
+  if (allPhotos.length === 0) return toast('Upload or paste site photos first', 'error');
 
   const btn = document.getElementById('aiScanBtn');
   btn.disabled = true;
@@ -450,7 +456,7 @@ async function aiScanPhotos() {
 
   try {
     // Convert photos to base64
-    const attachments = await Promise.all(scanPhotos.map(async (f) => {
+    const attachments = await Promise.all(allPhotos.map(async (f) => {
       const buf = await f.arrayBuffer();
       const bytes = new Uint8Array(buf);
       let binary = '';
@@ -460,7 +466,7 @@ async function aiScanPhotos() {
 
     const res = await fetch('/api/snags/ai-scan', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: mimaraiHeaders(),
       body: JSON.stringify({ attachments })
     });
 
@@ -623,4 +629,207 @@ function toast(msg, type = '') {
   t.textContent = msg;
   document.body.appendChild(t);
   setTimeout(() => t.remove(), 3000);
+}
+
+// Helper: get auth headers for MimaarAI requests
+function mimaraiHeaders() {
+  const headers = { 'Content-Type': 'application/json' };
+  if (mimaraiToken) headers['X-Mimarai-Token'] = mimaraiToken;
+  return headers;
+}
+
+// ────────────────────────────────────────────
+// MimaarAI Authentication
+// ────────────────────────────────────────────
+
+let authMode = 'login'; // 'login' or 'register'
+
+function updateAuthUI() {
+  const btn = document.getElementById('mimaraiAuthBtn');
+  if (mimaraiUser) {
+    btn.textContent = mimaraiUser.name || mimaraiUser.email;
+    btn.title = `Logged in as ${mimaraiUser.email}. Click to logout.`;
+    btn.onclick = logoutMimarai;
+  } else {
+    btn.textContent = 'Login';
+    btn.title = 'Sign in to MimaarAI for unlimited AI analysis';
+    btn.onclick = showMimaraiAuth;
+  }
+}
+
+function showMimaraiAuth() {
+  authMode = 'login';
+  document.getElementById('authNameGroup').style.display = 'none';
+  document.getElementById('authSubmitBtn').textContent = 'Sign In';
+  document.getElementById('authToggle').textContent = 'Create account';
+  document.getElementById('authError').style.display = 'none';
+  document.getElementById('mimaraiAuthModal').style.display = 'flex';
+  document.getElementById('auth-email').focus();
+}
+
+function hideMimaraiAuth() {
+  document.getElementById('mimaraiAuthModal').style.display = 'none';
+}
+
+function toggleAuthMode() {
+  authMode = authMode === 'login' ? 'register' : 'login';
+  document.getElementById('authNameGroup').style.display = authMode === 'register' ? 'block' : 'none';
+  document.getElementById('authSubmitBtn').textContent = authMode === 'register' ? 'Create Account' : 'Sign In';
+  document.getElementById('authToggle').textContent = authMode === 'register' ? 'Already have an account?' : 'Create account';
+  document.getElementById('authError').style.display = 'none';
+}
+
+async function submitMimaraiAuth() {
+  const email = document.getElementById('auth-email').value.trim();
+  const password = document.getElementById('auth-password').value;
+  const rememberMe = document.getElementById('auth-remember').checked;
+  const errEl = document.getElementById('authError');
+
+  if (!email || !password) { errEl.textContent = 'Email and password required'; errEl.style.display = 'block'; return; }
+
+  const btn = document.getElementById('authSubmitBtn');
+  btn.disabled = true;
+  btn.textContent = 'Connecting...';
+
+  try {
+    const body = authMode === 'register'
+      ? { email, password, name: document.getElementById('auth-name').value.trim() || email.split('@')[0] }
+      : { email, password, rememberMe };
+
+    const res = await fetch(`/api/mimarai/${authMode === 'register' ? 'register' : 'login'}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+
+    const data = await res.json();
+    if (!res.ok) {
+      errEl.textContent = data.message || data.error || 'Authentication failed';
+      errEl.style.display = 'block';
+      return;
+    }
+
+    // Save token and user
+    mimaraiToken = data.token;
+    mimaraiUser = data.user;
+    localStorage.setItem('mimarai_token', data.token);
+    localStorage.setItem('mimarai_user', JSON.stringify(data.user));
+
+    hideMimaraiAuth();
+    updateAuthUI();
+    toast(`Signed in as ${data.user.name || data.user.email}`, 'success');
+  } catch (e) {
+    errEl.textContent = 'Cannot connect to MimaarAI';
+    errEl.style.display = 'block';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = authMode === 'register' ? 'Create Account' : 'Sign In';
+  }
+}
+
+function logoutMimarai() {
+  mimaraiToken = null;
+  mimaraiUser = null;
+  localStorage.removeItem('mimarai_token');
+  localStorage.removeItem('mimarai_user');
+  updateAuthUI();
+  toast('Logged out from MimaarAI', 'success');
+}
+
+// ────────────────────────────────────────────
+// Clipboard Paste (Ctrl+V screenshots)
+// ────────────────────────────────────────────
+
+function initPasteListener() {
+  // Global paste listener
+  document.addEventListener('paste', (e) => {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+
+    for (const item of items) {
+      if (item.type.startsWith('image/')) {
+        e.preventDefault();
+        const file = item.getAsFile();
+        if (file) {
+          pastedImages.push(file);
+          renderPastedThumbnails();
+          // Auto-switch to scan tab
+          switchTab('scan');
+          toast('Screenshot pasted - ready to scan', 'success');
+        }
+        return;
+      }
+    }
+  });
+
+  // Also handle paste zone click
+  const pasteZone = document.getElementById('pasteZone');
+  if (pasteZone) {
+    pasteZone.addEventListener('dragover', (e) => { e.preventDefault(); pasteZone.classList.add('dragover'); });
+    pasteZone.addEventListener('dragleave', () => pasteZone.classList.remove('dragover'));
+    pasteZone.addEventListener('drop', (e) => {
+      e.preventDefault();
+      pasteZone.classList.remove('dragover');
+      for (const file of e.dataTransfer.files) {
+        if (file.type.startsWith('image/')) {
+          pastedImages.push(file);
+        }
+      }
+      renderPastedThumbnails();
+    });
+  }
+}
+
+function renderPastedThumbnails() {
+  const container = document.getElementById('pastedThumbnails');
+  container.innerHTML = '';
+  pastedImages.forEach(f => {
+    const img = document.createElement('img');
+    img.className = 'photo-thumb';
+    img.src = URL.createObjectURL(f);
+    container.appendChild(img);
+  });
+}
+
+// ────────────────────────────────────────────
+// Capture + Analyze (screen capture API)
+// ────────────────────────────────────────────
+
+async function captureAndAnalyze() {
+  try {
+    // Use Screen Capture API to grab the screen
+    const stream = await navigator.mediaDevices.getDisplayMedia({
+      video: { mediaSource: 'screen' },
+      preferCurrentTab: true
+    });
+
+    const track = stream.getVideoTracks()[0];
+    const imageCapture = new ImageCapture(track);
+    const bitmap = await imageCapture.grabFrame();
+    track.stop();
+
+    // Convert to blob
+    const canvas = document.createElement('canvas');
+    canvas.width = bitmap.width;
+    canvas.height = bitmap.height;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(bitmap, 0, 0);
+
+    const blob = await new Promise(r => canvas.toBlob(r, 'image/jpeg', 0.9));
+    const file = new File([blob], 'openspace-capture.jpg', { type: 'image/jpeg' });
+
+    pastedImages = [file];
+    renderPastedThumbnails();
+    switchTab('scan');
+    toast('Screen captured - analyzing...', 'success');
+
+    // Auto-trigger scan
+    aiScanPhotos();
+  } catch (e) {
+    if (e.name === 'NotAllowedError') {
+      toast('Screen capture cancelled', 'error');
+    } else {
+      toast('Screen capture not supported - use Ctrl+V to paste a screenshot', 'error');
+    }
+  }
 }

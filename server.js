@@ -41,18 +41,71 @@ const upload = multer({
   }
 });
 
+// ── MimaarAI Auth Proxy ──────────────────────────────────────
+
+// Login to MimaarAI
+app.post('/api/mimarai/login', async (req, res) => {
+  const { email, password, rememberMe } = req.body;
+  if (!email || !password) return res.status(400).json({ error: 'Email and password required' });
+  try {
+    const response = await fetch('https://mimarai.com/api/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password, rememberMe: rememberMe || false })
+    });
+    const data = await response.json();
+    if (!response.ok) return res.status(response.status).json(data);
+    res.json(data);
+  } catch (err) {
+    res.status(502).json({ error: 'Cannot connect to MimaarAI' });
+  }
+});
+
+// Register on MimaarAI
+app.post('/api/mimarai/register', async (req, res) => {
+  const { email, password, name } = req.body;
+  if (!email || !password || !name) return res.status(400).json({ error: 'Name, email, and password required' });
+  try {
+    const response = await fetch('https://mimarai.com/api/auth/register', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password, name })
+    });
+    const data = await response.json();
+    if (!response.ok) return res.status(response.status).json(data);
+    res.json(data);
+  } catch (err) {
+    res.status(502).json({ error: 'Cannot connect to MimaarAI' });
+  }
+});
+
+// Helper: build MimaarAI request headers (with auth if token provided)
+function mimaraiHeaders(req) {
+  const headers = {
+    'Content-Type': 'application/json',
+    'X-Session-ID': `snag-${Date.now()}`
+  };
+  const authHeader = req.headers['x-mimarai-token'];
+  if (authHeader) {
+    headers['Authorization'] = `Bearer ${authHeader}`;
+  }
+  return headers;
+}
+
 // OpenSpace proxy — proxies ALL paths under /proxy/os/<host>/... to the actual OpenSpace host
 const ALLOWED_OS_HOSTS = ['ksa.openspace.ai', 'app.openspace.ai', 'eu.openspace.ai', 'openspace.ai'];
 const https = require('https');
 
-app.use('/proxy/os/:host', (req, res) => {
+app.all('/proxy/os/:host/{*path}', (req, res) => {
   const host = req.params.host;
   if (!ALLOWED_OS_HOSTS.includes(host)) {
     return res.status(400).json({ error: 'Invalid OpenSpace host' });
   }
 
-  // Build target path: everything after /proxy/os/<host>
-  const targetPath = req.url; // already has the path after :host match
+  // Build target path from named params
+  const remainingPath = req.params.path || '';
+  const qs = req._parsedUrl?.search || '';
+  const targetPath = '/' + remainingPath + qs;
 
   const options = {
     hostname: host,
@@ -253,7 +306,7 @@ Return exactly this JSON structure: {"category":"one of: Structural, MEP, Finish
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'X-Session-ID': `snag-categorize-${Date.now()}`
+          ...mimaraiHeaders(req),
         },
         body: JSON.stringify({
           message: prompt,
@@ -320,7 +373,7 @@ Be thorough — check for cracks, water damage, missing items, misalignment, inc
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'X-Session-ID': `snag-scan-${Date.now()}`
+          ...mimaraiHeaders(req),
         },
         body: JSON.stringify({
           message: prompt,

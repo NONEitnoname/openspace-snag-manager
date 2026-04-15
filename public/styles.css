@@ -718,6 +718,25 @@ body {
 
 .os-status-dot.disconnected { background: #999; }
 
+/* Paste zone */
+.paste-zone {
+  border: 2px dashed var(--teal-light);
+  border-radius: 8px;
+  padding: 24px;
+  text-align: center;
+  cursor: pointer;
+  color: var(--teal);
+  font-size: 13px;
+  font-weight: 500;
+  background: rgba(20,184,166,0.04);
+  margin-bottom: 12px;
+  transition: all 0.2s;
+  outline: none;
+}
+
+.paste-zone:hover, .paste-zone:focus { border-color: var(--teal); background: rgba(20,184,166,0.08); }
+.paste-zone.dragover { border-color: var(--teal-dark); background: rgba(20,184,166,0.12); transform: scale(1.01); }
+
 /* Scan result cards */
 .scan-result-card {
   background: white;

@@ -14,6 +14,7 @@
     <div class="header-actions">
       <button onclick="exportCSV()" title="Export CSV">CSV</button>
       <button onclick="exportPDF()" title="Export PDF">PDF</button>
+      <button onclick="showMimaraiAuth()" id="mimaraiAuthBtn" title="MimaarAI Login">Login</button>
     </div>
   </header>
 
@@ -24,6 +25,7 @@
       <div class="viewer-toolbar">
         <span>360° Site Capture</span>
         <div class="viewer-toolbar-spacer"></div>
+        <button onclick="captureAndAnalyze()" id="captureBtn" title="Screenshot the OpenSpace view and analyze with AI">Capture + Analyze</button>
         <button onclick="showOsConnect()" id="osConnectBtn">Connect OpenSpace</button>
         <button onclick="toggleViewerFull()">Expand</button>
         <button onclick="openOriginal()">Open in Tab</button>
@@ -65,7 +67,7 @@
           <input type="hidden" id="editId">
 
           <button class="ai-btn" id="aiBtn" onclick="aiCategorize()">
-            ✦ AI Auto-Categorize (MimaarAI)
+            AI Auto-Categorize (MimaarAI)
           </button>
 
           <div class="form-group">
@@ -157,7 +159,7 @@
           <div class="form-group">
             <label>Photos</label>
             <div class="photo-upload" onclick="document.getElementById('f-photos').click()">
-              📷 Click to upload photos
+              Click to upload photos
               <input type="file" id="f-photos" multiple accept="image/*">
             </div>
             <div class="photo-thumbnails" id="photoThumbnails"></div>
@@ -198,11 +200,17 @@
         <div class="form-container">
           <h3 style="font-family:'Playfair Display',serif;font-size:16px;margin-bottom:4px">AI Defect Scanner</h3>
           <p style="font-size:12px;color:var(--text-muted);margin-bottom:16px">
-            Upload site photos or screenshots from OpenSpace. MimaarAI will analyze them for construction defects and automatically create snag entries.
+            Upload site photos, paste screenshots (Ctrl+V), or use <strong>Capture + Analyze</strong> on the viewer toolbar. MimaarAI will detect construction defects and create snag entries.
           </p>
 
+          <!-- Paste zone -->
+          <div class="paste-zone" id="pasteZone" tabindex="0">
+            Paste screenshot here (Ctrl+V) or drag & drop
+          </div>
+          <div class="photo-thumbnails" id="pastedThumbnails" style="margin-bottom:12px"></div>
+
           <div class="form-group">
-            <label>Site Photos / Screenshots</label>
+            <label>Or upload files</label>
             <div class="photo-upload" onclick="document.getElementById('f-scanphotos').click()">
               Upload site photos for AI analysis
               <input type="file" id="f-scanphotos" multiple accept="image/*">
@@ -216,6 +224,37 @@
 
           <div id="scanResults"></div>
         </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- MimaarAI Auth Modal -->
+  <div class="confirm-overlay" id="mimaraiAuthModal" style="display:none">
+    <div class="os-connect-box" style="max-width:400px">
+      <h3>MimaarAI Login</h3>
+      <p style="font-size:12px;color:var(--text-muted);margin-bottom:12px">
+        Sign in to get unlimited AI analysis. <span id="authToggle" style="color:var(--teal);cursor:pointer" onclick="toggleAuthMode()">Create account</span>
+      </p>
+      <div class="form-group" id="authNameGroup" style="display:none">
+        <label>Name</label>
+        <input type="text" id="auth-name" placeholder="Your name">
+      </div>
+      <div class="form-group">
+        <label>Email</label>
+        <input type="email" id="auth-email" placeholder="you@company.com">
+      </div>
+      <div class="form-group">
+        <label>Password</label>
+        <input type="password" id="auth-password" placeholder="Min 8 chars, uppercase + digit">
+      </div>
+      <div class="form-group" style="display:flex;align-items:center;gap:6px">
+        <input type="checkbox" id="auth-remember" checked>
+        <label for="auth-remember" style="margin:0;text-transform:none;font-size:12px">Remember me (30 days)</label>
+      </div>
+      <div id="authError" style="color:var(--critical);font-size:12px;margin-bottom:8px;display:none"></div>
+      <div class="os-connect-actions">
+        <button class="submit-btn" id="authSubmitBtn" onclick="submitMimaraiAuth()">Sign In</button>
+        <button class="cancel-btn" onclick="hideMimaraiAuth()">Cancel</button>
       </div>
     </div>
   </div>
