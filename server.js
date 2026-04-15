@@ -242,14 +242,7 @@ Return exactly this JSON structure: {"category":"one of: Structural, MEP, Finish
           message: prompt,
           sessionId: `snag-categorize-${Date.now()}`,
           model,
-          temperature: 0.3,
-          extendedThinking: { enabled: false, depth: 'quick', showThinking: false },
-          engineeringContext: {
-            sbcMode: true,
-            stream: 'structural',
-            category: 'inspection',
-            type: 'qa_qc'
-          }
+          temperature: 0.3
         })
       });
 
@@ -314,18 +307,11 @@ Be thorough — check for cracks, water damage, missing items, misalignment, inc
           sessionId: `snag-scan-${Date.now()}`,
           model,
           temperature: 0.4,
-          extendedThinking: { enabled: false, depth: 'quick', showThinking: false },
           attachments: attachments.map(a => ({
             type: a.type || 'image/jpeg',
             data: a.data,
             name: a.name || 'site-photo.jpg'
-          })),
-          engineeringContext: {
-            sbcMode: true,
-            stream: 'structural',
-            category: 'inspection',
-            type: 'qa_qc'
-          }
+          }))
         })
       });
 
