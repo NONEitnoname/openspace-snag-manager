@@ -42,40 +42,55 @@ const upload = multer({
 });
 
 // OpenSpace proxy — proxies ALL paths under /proxy/os/<host>/... to the actual OpenSpace host
-// Supports any OpenSpace region: ksa.openspace.ai, app.openspace.ai, etc.
 const ALLOWED_OS_HOSTS = ['ksa.openspace.ai', 'app.openspace.ai', 'eu.openspace.ai', 'openspace.ai'];
+const https = require('https');
 
-app.use('/proxy/os', (req, res, next) => {
-  // Extract target host from path: /proxy/os/ksa.openspace.ai/ohplayer?...
-  const pathAfterProxy = req.url.slice(1); // remove leading /
-  const slashIdx = pathAfterProxy.indexOf('/');
-  const host = slashIdx > -1 ? pathAfterProxy.slice(0, slashIdx) : pathAfterProxy;
-  const remaining = slashIdx > -1 ? pathAfterProxy.slice(slashIdx) : '/';
-
+app.use('/proxy/os/:host', (req, res) => {
+  const host = req.params.host;
   if (!ALLOWED_OS_HOSTS.includes(host)) {
     return res.status(400).json({ error: 'Invalid OpenSpace host' });
   }
 
-  req._osTarget = `https://${host}`;
-  req._osPath = remaining;
-  next();
-}, createProxyMiddleware({
-  router: (req) => req._osTarget,
-  changeOrigin: true,
-  pathRewrite: (p, req) => req._osPath,
-  followRedirects: true,
-  on: {
-    proxyRes: (proxyRes, req, res) => {
-      // Strip all frame-blocking headers so iframe works
-      delete proxyRes.headers['x-frame-options'];
-      delete proxyRes.headers['content-security-policy'];
-      delete proxyRes.headers['content-security-policy-report-only'];
-      delete proxyRes.headers['x-content-type-options'];
-      // Allow cross-origin for assets
-      proxyRes.headers['access-control-allow-origin'] = '*';
+  // Build target path: everything after /proxy/os/<host>
+  const targetPath = req.url; // already has the path after :host match
+
+  const options = {
+    hostname: host,
+    port: 443,
+    path: targetPath,
+    method: req.method,
+    headers: {
+      ...req.headers,
+      host: host,
+      referer: `https://${host}/`,
+      origin: `https://${host}`,
     }
-  }
-}));
+  };
+  // Remove headers that would confuse the upstream
+  delete options.headers['x-forwarded-for'];
+  delete options.headers['x-forwarded-proto'];
+  delete options.headers['x-forwarded-host'];
+
+  const proxyReq = https.request(options, (proxyRes) => {
+    // Strip frame-blocking headers
+    const headers = { ...proxyRes.headers };
+    delete headers['x-frame-options'];
+    delete headers['content-security-policy'];
+    delete headers['content-security-policy-report-only'];
+    delete headers['x-content-type-options'];
+    headers['access-control-allow-origin'] = '*';
+
+    res.writeHead(proxyRes.statusCode, headers);
+    proxyRes.pipe(res);
+  });
+
+  proxyReq.on('error', (err) => {
+    console.error('Proxy error:', err.message);
+    res.status(502).json({ error: 'Failed to connect to OpenSpace' });
+  });
+
+  req.pipe(proxyReq);
+});
 
 // Health check
 app.get('/api/health', (req, res) => {
