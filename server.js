@@ -12,7 +12,7 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 app.use(cors());
-app.use(express.json({ limit: '10mb' }));
+app.use(express.json({ limit: '50mb' }));
 app.use(express.static('public'));
 app.use('/uploads', express.static('uploads'));
 
@@ -81,13 +81,13 @@ app.post('/api/mimarai/register', async (req, res) => {
 
 // Helper: build MimaarAI request headers (with auth if token provided)
 function mimaraiHeaders(req) {
-  const headers = {
-    'Content-Type': 'application/json',
-    'X-Session-ID': `snag-${Date.now()}`
-  };
-  const authHeader = req.headers['x-mimarai-token'];
-  if (authHeader) {
-    headers['Authorization'] = `Bearer ${authHeader}`;
+  const headers = { 'X-Session-ID': `snag-${Date.now()}` };
+  const authToken = req.headers['x-mimarai-token'];
+  if (authToken) {
+    headers['Authorization'] = `Bearer ${authToken}`;
+    console.log('[MimaarAI] Using authenticated request');
+  } else {
+    console.log('[MimaarAI] Anonymous request (no token)');
   }
   return headers;
 }
@@ -345,24 +345,26 @@ Return exactly this JSON structure: {"category":"one of: Structural, MEP, Finish
       });
 
       if (!response.ok) {
-        console.log(`MimaarAI ${model} returned ${response.status}, trying fallback...`);
+        const errBody = await response.text().catch(() => '');
+        console.log(`[MimaarAI] ${model} categorize FAILED ${response.status}: ${errBody.slice(0, 500)}`);
         continue;
       }
 
       const data = await response.json();
       const content = data.content || '';
+      console.log(`[MimaarAI] ${model} categorize OK, response length: ${content.length}`);
 
       // Extract JSON from response (handle potential markdown wrapping)
       const jsonMatch = content.match(/\{[\s\S]*\}/);
       if (!jsonMatch) {
-        console.log(`MimaarAI ${model} returned non-JSON, trying fallback...`);
+        console.log(`[MimaarAI] ${model} returned non-JSON: ${content.slice(0, 200)}`);
         continue;
       }
 
       const result = JSON.parse(jsonMatch[0]);
       return res.json({ success: true, model, ...result });
     } catch (err) {
-      console.error(`MimaarAI ${model} error:`, err.message);
+      console.error(`[MimaarAI] ${model} categorize exception:`, err.message);
       continue;
     }
   }
@@ -417,12 +419,14 @@ Be thorough — check for cracks, water damage, missing items, misalignment, inc
       });
 
       if (!response.ok) {
-        console.log(`MimaarAI ${model} scan returned ${response.status}, trying fallback...`);
+        const errBody = await response.text().catch(() => '');
+        console.log(`[MimaarAI] ${model} scan FAILED ${response.status}: ${errBody.slice(0, 500)}`);
         continue;
       }
 
       const data = await response.json();
       const content = data.content || '';
+      console.log(`[MimaarAI] ${model} scan OK, response length: ${content.length}`);
 
       // Extract JSON array from response
       const arrayMatch = content.match(/\[[\s\S]*\]/);
@@ -433,14 +437,14 @@ Be thorough — check for cracks, water damage, missing items, misalignment, inc
           const single = JSON.parse(objMatch[0]);
           return res.json({ success: true, model, snags: [single] });
         }
-        console.log(`MimaarAI ${model} scan returned non-JSON, trying fallback...`);
+        console.log(`[MimaarAI] ${model} scan non-JSON response: ${content.slice(0, 300)}`);
         continue;
       }
 
       const snags = JSON.parse(arrayMatch[0]);
       return res.json({ success: true, model, snags: Array.isArray(snags) ? snags : [snags] });
     } catch (err) {
-      console.error(`MimaarAI ${model} scan error:`, err.message);
+      console.error(`[MimaarAI] ${model} scan exception:`, err.message);
       continue;
     }
   }

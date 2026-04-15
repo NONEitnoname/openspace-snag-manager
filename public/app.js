@@ -26,7 +26,8 @@ document.addEventListener('DOMContentLoaded', () => {
 function initViewer() {
   const saved = localStorage.getItem('openspace_url');
   if (saved) {
-    loadOpenSpaceUrl(saved);
+    currentOsUrl = saved;
+    loadIframe(saved);
   } else {
     showViewerWelcome();
   }
@@ -35,62 +36,38 @@ function initViewer() {
 function osUrlToProxy(osUrl) {
   try {
     const u = new URL(osUrl);
-    const host = u.host; // e.g. ksa.openspace.ai
-    return `/proxy/os/${host}${u.pathname}${u.search}`;
+    return `/proxy/os/${u.host}${u.pathname}${u.search}`;
   } catch { return null; }
 }
 
-function loadOpenSpaceUrl(url) {
+function loadIframe(url) {
   currentOsUrl = url;
   localStorage.setItem('openspace_url', url);
   const proxyUrl = osUrlToProxy(url);
-  if (!proxyUrl) {
-    toast('Invalid OpenSpace URL', 'error');
-    return;
-  }
+  if (!proxyUrl) { toast('Invalid OpenSpace URL', 'error'); return; }
 
   const frame = document.getElementById('viewerFrame');
   frame.innerHTML = '';
   const iframe = document.createElement('iframe');
   iframe.src = proxyUrl;
   iframe.setAttribute('allow', 'fullscreen');
+  iframe.style.width = '100%';
+  iframe.style.height = '100%';
+  iframe.style.border = 'none';
   frame.appendChild(iframe);
-
-  // Update toolbar status
   updateOsStatus(true);
-
-  // Fallback after 10s if iframe appears empty
-  setTimeout(() => {
-    try {
-      const doc = iframe.contentDocument;
-      if (doc && doc.body && doc.body.innerHTML.length < 50) showViewerFallback();
-    } catch (e) {
-      // Cross-origin means proxy worked and content loaded
-      updateOsStatus(true);
-    }
-  }, 10000);
 }
 
 function showViewerWelcome() {
   const frame = document.getElementById('viewerFrame');
   frame.innerHTML = `
-    <div class="viewer-fallback">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
-      <h3 style="color:#fff;font-family:'Playfair Display',serif">Connect Your OpenSpace</h3>
-      <p>Paste your OpenSpace share link to load the 360° viewer here.</p>
-      <button onclick="showOsConnect()">Connect OpenSpace</button>
-    </div>`;
-  updateOsStatus(false);
-}
-
-function showViewerFallback() {
-  const frame = document.getElementById('viewerFrame');
-  frame.innerHTML = `
-    <div class="viewer-fallback">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
-      <p>OpenSpace blocked iframe embedding.<br>You can still use the viewer in a new tab.</p>
-      <button onclick="openOriginal()">Open Viewer in New Tab</button>
-      <button onclick="showOsConnect()" style="background:transparent;border:1px solid rgba(255,255,255,0.3);margin-top:4px">Try Different URL</button>
+    <div class="viewer-hub">
+      <div class="viewer-hub-header">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="width:48px;height:48px;opacity:0.5;margin-bottom:8px"><circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+        <h3>OpenSpace 360° Viewer</h3>
+        <p>Set your OpenSpace URL to load the viewer inline. You can log in with your OpenSpace credentials directly in the viewer pane.</p>
+      </div>
+      <button class="viewer-hub-btn primary" onclick="showOsConnect()">Set OpenSpace URL</button>
     </div>`;
   updateOsStatus(false);
 }
@@ -98,7 +75,7 @@ function showViewerFallback() {
 function updateOsStatus(connected) {
   const btn = document.getElementById('osConnectBtn');
   if (connected) {
-    btn.innerHTML = `<span class="os-status"><span class="os-status-dot"></span> Connected</span>`;
+    btn.innerHTML = 'Change URL';
   } else {
     btn.innerHTML = 'Connect OpenSpace';
   }

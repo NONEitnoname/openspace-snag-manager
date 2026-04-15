@@ -149,29 +149,134 @@ body {
   border: none;
 }
 
-.viewer-fallback {
+/* Viewer hub panel */
+.viewer-hub {
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   height: 100%;
-  color: #999;
-  gap: 16px;
-  text-align: center;
-  padding: 40px;
+  color: #ccc;
+  padding: 32px;
+  gap: 20px;
+  overflow-y: auto;
 }
 
-.viewer-fallback svg { width: 64px; height: 64px; opacity: 0.4; }
+.viewer-hub-header {
+  text-align: center;
+}
 
-.viewer-fallback button {
-  padding: 10px 20px;
-  background: var(--teal);
-  color: white;
-  border: none;
-  border-radius: 6px;
+.viewer-hub-header h3 {
+  font-family: 'Playfair Display', serif;
+  font-size: 20px;
+  color: #fff;
+  margin-bottom: 6px;
+}
+
+.viewer-hub-header p {
+  font-size: 13px;
+  color: #999;
+  max-width: 400px;
+}
+
+.viewer-hub-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+.viewer-hub-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 20px;
+  border: 1px solid rgba(255,255,255,0.2);
+  border-radius: 8px;
+  background: rgba(255,255,255,0.08);
+  color: #fff;
   cursor: pointer;
   font-size: 14px;
   font-family: 'DM Sans', sans-serif;
+  transition: all 0.2s;
+}
+
+.viewer-hub-btn:hover { background: rgba(255,255,255,0.15); transform: translateY(-1px); }
+.viewer-hub-btn.primary { background: var(--teal); border-color: var(--teal); }
+.viewer-hub-btn.primary:hover { background: var(--teal-dark); }
+.btn-icon { font-size: 18px; }
+
+.viewer-hub-workflow {
+  background: rgba(255,255,255,0.05);
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 10px;
+  padding: 16px 20px;
+  max-width: 480px;
+  width: 100%;
+}
+
+.viewer-hub-workflow h4 {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--teal-light);
+  margin-bottom: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.workflow-steps { display: flex; flex-direction: column; gap: 10px; }
+
+.workflow-step {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.step-num {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--teal);
+  color: white;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.workflow-step kbd {
+  display: inline-block;
+  padding: 1px 5px;
+  background: rgba(255,255,255,0.1);
+  border: 1px solid rgba(255,255,255,0.2);
+  border-radius: 3px;
+  font-family: 'DM Mono', monospace;
+  font-size: 10px;
+}
+
+.viewer-hub-paste {
+  border: 2px dashed var(--teal-light);
+  border-radius: 8px;
+  padding: 16px;
+  text-align: center;
+  cursor: pointer;
+  color: var(--teal-light);
+  font-size: 13px;
+  font-weight: 500;
+  max-width: 480px;
+  width: 100%;
+  transition: all 0.2s;
+  outline: none;
+}
+
+.viewer-hub-paste:hover, .viewer-hub-paste:focus {
+  border-color: #fff;
+  color: #fff;
+  background: rgba(20,184,166,0.1);
 }
 
 /* Snag panel */
