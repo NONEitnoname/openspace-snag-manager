@@ -1,0 +1,28 @@
+{
+  "name": "openspace-snag-manager",
+  "version": "1.0.0",
+  "description": "Construction snag/defect manager with OpenSpace 360° viewer and MimaarAI analysis",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "keywords": [
+    "construction",
+    "snag",
+    "defect",
+    "openspace",
+    "mimarai"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "better-sqlite3": "^12.9.0",
+    "cors": "^2.8.6",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "http-proxy-middleware": "^3.0.5",
+    "multer": "^2.1.1",
+    "pdfkit": "^0.18.0",
+    "uuid": "^13.0.0"
+  }
+}
