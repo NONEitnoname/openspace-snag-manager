@@ -109,7 +109,7 @@ function connectOpenSpace() {
   }
 
   hideOsConnect();
-  loadOpenSpaceUrl(url);
+  loadIframe(url);
   toast('Loading OpenSpace viewer...', 'success');
 }
 
@@ -730,9 +730,10 @@ function initPasteListener() {
         if (file) {
           pastedImages.push(file);
           renderPastedThumbnails();
-          // Auto-switch to scan tab
           switchTab('scan');
-          toast('Screenshot pasted - ready to scan', 'success');
+          toast('Screenshot pasted - analyzing...', 'success');
+          // Auto-trigger AI scan after short delay for thumbnails to render
+          setTimeout(() => aiScanPhotos(), 500);
         }
         return;
       }

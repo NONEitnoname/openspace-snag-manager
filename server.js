@@ -321,7 +321,7 @@ app.post('/api/snags/ai-categorize', async (req, res) => {
 "${description}"
 Return exactly this JSON structure: {"category":"one of: Structural, MEP, Finishing, Safety, Waterproofing, Electrical, Plumbing, HVAC, Fire Protection, Painting, Flooring, Ceiling, Doors & Windows, Facade, Landscaping, Other","priority":"Critical|High|Medium|Low","trade":"one of: General Contractor, Electrical, Mechanical, Plumbing, HVAC, Fire Protection, Painting, Flooring, Glazing, Steelwork, Concrete, Drywall, Roofing, Landscaping, Other","rootCause":"1 sentence","recommendation":"1-2 sentences","effort":"Minor (<1hr)|Moderate (1-4hrs)|Major (4-8hrs)|Extensive (>8hrs)"}`;
 
-  const models = ['mimarai-pro', 'mimarai-advanced'];
+  const models = ['mimarai-ultra', 'mimarai-pro', 'mimarai-advanced'];
 
   for (const model of models) {
     try {
@@ -339,6 +339,7 @@ Return exactly this JSON structure: {"category":"one of: Structural, MEP, Finish
           engineeringContext: {
             sbcMode: true,
             stream: 'structural',
+            category: 'inspection',
             type: 'qa_qc'
           }
         })
@@ -369,7 +370,7 @@ Return exactly this JSON structure: {"category":"one of: Structural, MEP, Finish
     }
   }
 
-  res.status(503).json({ error: 'AI categorization unavailable. Both MimaarAI models failed.' });
+  res.status(503).json({ error: 'AI categorization unavailable. Please login to MimaarAI first (top-right Login button).' });
 });
 
 // AI Scan — vision-based defect detection from site photos
@@ -389,8 +390,8 @@ Each object must have:
 If no defects are found, return an empty array: []
 Be thorough — check for cracks, water damage, missing items, misalignment, incomplete work, safety hazards, MEP issues, finish quality, etc.`;
 
-  // Use mimarai-pro (Gemini vision) first, then mimarai-advanced
-  const models = ['mimarai-pro', 'mimarai-advanced'];
+  // Try mimarai-pro (Gemini vision) first, then ultra, then advanced
+  const models = ['mimarai-pro', 'mimarai-ultra', 'mimarai-advanced'];
 
   for (const model of models) {
     try {
@@ -413,6 +414,7 @@ Be thorough — check for cracks, water damage, missing items, misalignment, inc
           engineeringContext: {
             sbcMode: true,
             stream: 'structural',
+            category: 'inspection',
             type: 'qa_qc'
           }
         })
@@ -449,7 +451,7 @@ Be thorough — check for cracks, water damage, missing items, misalignment, inc
     }
   }
 
-  res.status(503).json({ error: 'AI scan unavailable. Both MimaarAI models failed.' });
+  res.status(503).json({ error: 'AI scan unavailable. Please login to MimaarAI first (top-right Login button).' });
 });
 
 app.listen(PORT, () => {
