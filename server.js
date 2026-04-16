@@ -221,9 +221,9 @@ app.post('/api/snags/:id/photos', upload.array('photos', 10), (req, res) => {
 
 // SSE streaming passthrough: pipes MimaarAI stream → frontend in real-time
 // Uses /stream endpoint (max_tokens:64000) to avoid thinking budget crash
-async function streamMimaarAI(req, res, { message, model, temperature, attachments, engineeringContext }) {
+async function streamMimaarAI(req, res, { message, model, temperature, attachments, engineeringContext, timeoutMs }) {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 60000);
+  const timeout = setTimeout(() => controller.abort(), timeoutMs || 90000);
 
   try {
     const response = await fetch('https://mimarai.com/api/chat/enhanced/stream', {
@@ -269,9 +269,11 @@ async function streamMimaarAI(req, res, { message, model, temperature, attachmen
         if (!payload || payload === '[DONE]') continue;
         try {
           const data = JSON.parse(payload);
-          if (data.content) {
-            fullContent += data.content;
-            res.write(`data: ${JSON.stringify({ type: 'chunk', content: data.content })}\n\n`);
+          // MimaarAI sends content in various formats
+          const text = data.content || data.text || data.delta || '';
+          if (text) {
+            fullContent += text;
+            res.write(`data: ${JSON.stringify({ type: 'chunk', content: text })}\n\n`);
           }
         } catch {}
       }
