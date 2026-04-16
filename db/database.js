@@ -2,7 +2,7 @@ const Database = require('better-sqlite3');
 const path = require('path');
 const crypto = require('crypto');
 
-const dbPath = path.join(__dirname, '..', 'snags.db');
+const dbPath = process.env.TEST_DB_PATH || path.join(__dirname, '..', 'snags.db');
 const db = new Database(dbPath);
 
 db.pragma('journal_mode = WAL');
