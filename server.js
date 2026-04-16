@@ -223,7 +223,7 @@ app.post('/api/snags/:id/photos', upload.array('photos', 10), (req, res) => {
 // Uses /stream endpoint (max_tokens:64000) to avoid thinking budget crash
 async function streamMimaarAI(req, res, { message, model, temperature, attachments, engineeringContext, timeoutMs }) {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs || 90000);
+  const timeout = setTimeout(() => controller.abort(), timeoutMs || 180000);
 
   try {
     const response = await fetch('https://mimarai.com/api/chat/enhanced/stream', {
@@ -340,15 +340,14 @@ app.post('/api/snags/ai-scan', async (req, res) => {
     return res.status(400).json({ error: 'At least one photo is required' });
   }
 
-  const prompt = `[SITE PHOTO INSPECTION — These are construction site photographs, NOT engineering drawings]
-You are a construction QA/QC expert inspecting a building site. Analyze these site photos for defects and snags. Respond ONLY with a valid JSON array (no markdown, no code fences).
+  const prompt = `Look at these construction site photos. List all visible defects, quality issues, and safety hazards as a JSON array. No markdown, no code fences, just the JSON array.
 
-Each object: {"title":"short name","description":"detail","category":"Structural|MEP|Finishing|Safety|Waterproofing|Electrical|Plumbing|HVAC|Fire Protection|Painting|Flooring|Ceiling|Doors & Windows|Facade|Landscaping|Other","priority":"Critical|High|Medium|Low","trade":"responsible trade","rootCause":"cause","recommendation":"fix","effort":"Minor (<1hr)|Moderate (1-4hrs)|Major (4-8hrs)|Extensive (>8hrs)","location":"where in image"}
+Each object: {"title":"short name","description":"detail","category":"Structural|MEP|Finishing|Safety|Waterproofing|Electrical|Plumbing|HVAC|Fire Protection|Painting|Flooring|Ceiling|Doors & Windows|Facade|Landscaping|Other","priority":"Critical|High|Medium|Low","trade":"responsible trade","rootCause":"cause","recommendation":"fix per SBC standards","effort":"Minor (<1hr)|Moderate (1-4hrs)|Major (4-8hrs)|Extensive (>8hrs)","location":"where in image"}
 
 If no defects found, return: []`;
 
   const models = ['mimarai-pro', 'mimarai-ultra', 'mimarai-advanced'];
-  const engCtx = { sbcMode: true, stream: 'structural', category: 'site_photo', type: 'site_inspection' };
+  const engCtx = { sbcMode: true, stream: 'structural', category: 'site_photo', type: 'field_observation' };
 
   for (const model of models) {
     try {
