@@ -343,90 +343,7 @@ async function collectMimaarAI(req, { message, model, temperature, attachments }
   throw new Error('All MimaarAI models failed');
 }
 
-// SSE streaming passthrough: pipes MimaarAI stream → frontend in real-time
-// No fixed timeout — keeps connection alive with heartbeats until MimaarAI finishes or errors
-async function streamMimaarAI(req, res, { message, model, temperature, attachments, engineeringContext }) {
-  // Send keepalive every 15s so proxies/browsers don't kill the connection
-  let heartbeat;
-  let clientDisconnected = false;
-
-  try {
-    const response = await fetch('https://mimarai.com/api/chat/enhanced/stream', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...mimaraiHeaders(req) },
-      body: JSON.stringify({
-        message,
-        sessionId: `snag-${Date.now()}`,
-        model,
-        temperature: temperature || 0.3,
-        stream: true,
-        isMobile: true,
-        ...(attachments ? { attachments } : {}),
-        ...(engineeringContext ? { engineeringContext } : {})
-      })
-    });
-
-    if (!response.ok) {
-      const errBody = await response.text().catch(() => '');
-      throw new Error(`${response.status}: ${errBody.slice(0, 300)}`);
-    }
-
-    // Set SSE headers
-    res.setHeader('Content-Type', 'text/event-stream');
-    res.setHeader('Cache-Control', 'no-cache');
-    res.setHeader('Connection', 'keep-alive');
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.flushHeaders();
-
-    // Detect client disconnect
-    res.on('close', () => { clientDisconnected = true; });
-
-    // Send heartbeat keepalives every 15s so Railway/browser don't timeout
-    heartbeat = setInterval(() => {
-      if (!clientDisconnected) {
-        res.write(`data: ${JSON.stringify({ type: 'heartbeat' })}\n\n`);
-      }
-    }, 15000);
-
-    // Send initial status
-    res.write(`data: ${JSON.stringify({ type: 'status', message: 'Connected to MimaarAI, waiting for response...' })}\n\n`);
-
-    // Pipe MimaarAI SSE → frontend, accumulate content
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let fullContent = '';
-
-    while (true) {
-      if (clientDisconnected) break;
-      const { done, value } = await reader.read();
-      if (done) break;
-      const chunk = decoder.decode(value, { stream: true });
-      for (const line of chunk.split('\n')) {
-        if (!line.startsWith('data: ')) continue;
-        const payload = line.slice(6).trim();
-        if (!payload || payload === '[DONE]') continue;
-        try {
-          const data = JSON.parse(payload);
-          const text = data.content || data.text || data.delta || '';
-          if (text) {
-            fullContent += text;
-            if (!clientDisconnected) {
-              res.write(`data: ${JSON.stringify({ type: 'chunk', content: text })}\n\n`);
-            }
-          }
-        } catch {}
-      }
-    }
-
-    clearInterval(heartbeat);
-    return fullContent;
-  } catch (err) {
-    if (heartbeat) clearInterval(heartbeat);
-    throw err;
-  }
-}
-
-// AI Categorize via MimaarAI (SSE streaming)
+// AI Categorize via MimaarAI
 app.post('/api/snags/ai-categorize', async (req, res) => {
   const { description } = req.body;
   if (!description) return res.status(400).json({ error: 'Description is required' });
@@ -436,39 +353,19 @@ app.post('/api/snags/ai-categorize', async (req, res) => {
 "${description}"
 Return: {"category":"Structural|MEP|Finishing|Safety|Waterproofing|Electrical|Plumbing|HVAC|Fire Protection|Painting|Flooring|Ceiling|Doors & Windows|Facade|Landscaping|Other","priority":"Critical|High|Medium|Low","trade":"General Contractor|Electrical|Mechanical|Plumbing|HVAC|Fire Protection|Painting|Flooring|Glazing|Steelwork|Concrete|Drywall|Roofing|Landscaping|Other","rootCause":"1 sentence","recommendation":"1-2 sentences","effort":"Minor (<1hr)|Moderate (1-4hrs)|Major (4-8hrs)|Extensive (>8hrs)","specViolations":["list any project spec violations, or empty array if none"]}`;
 
-  const models = ['mimarai-ultra', 'mimarai-pro', 'mimarai-advanced'];
-  const engCtx = { sbcMode: true, stream: 'structural', category: 'inspection', type: 'qa_qc' };
-
-  for (const model of models) {
-    try {
-      console.log(`[MimaarAI] Trying ${model} for categorize...`);
-      const content = await streamMimaarAI(req, res, { message: prompt, model, temperature: 0.3, engineeringContext: engCtx });
-      console.log(`[MimaarAI] ${model} categorize OK, length: ${content.length}`);
-
-      const jsonMatch = content.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        const result = JSON.parse(jsonMatch[0]);
-        res.write(`data: ${JSON.stringify({ type: 'result', model, ...result })}\n\n`);
-      } else {
-        res.write(`data: ${JSON.stringify({ type: 'result', model, raw: content })}\n\n`);
-      }
-      res.write('data: [DONE]\n\n');
-      return res.end();
-    } catch (err) {
-      console.log(`[MimaarAI] ${model} categorize FAILED: ${err.message}`);
-      continue;
-    }
-  }
-
-  if (!res.headersSent) {
-    res.status(503).json({ error: 'AI categorization unavailable. Please login to MimaarAI first.' });
-  } else {
-    res.write(`data: ${JSON.stringify({ type: 'error', error: 'All models failed' })}\n\n`);
-    res.end();
+  try {
+    const content = await collectMimaarAI(req, { message: prompt, model: 'mimarai-ultra', temperature: 0.3 });
+    const jsonMatch = content.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) return res.json({ success: true, raw: content });
+    const result = JSON.parse(jsonMatch[0]);
+    res.json({ success: true, ...result });
+  } catch (err) {
+    console.error('[AI Categorize] Failed:', err.message);
+    res.status(503).json({ error: 'AI categorization failed. Please login to MimaarAI first.' });
   }
 });
 
-// AI Scan — vision-based defect detection (SSE streaming)
+// AI Scan — vision-based defect detection
 app.post('/api/snags/ai-scan', async (req, res) => {
   const { attachments } = req.body;
   if (!attachments || attachments.length === 0) {
@@ -482,48 +379,31 @@ Each object: {"title":"short name","description":"detail","category":"Structural
 
 If no defects found, return: []`;
 
-  const models = ['mimarai-pro', 'mimarai-ultra', 'mimarai-advanced'];
-  const engCtx = { sbcMode: true, stream: 'structural', category: 'site_photo', type: 'field_observation' };
+  try {
+    const content = await collectMimaarAI(req, {
+      message: prompt,
+      model: 'mimarai-pro',
+      temperature: 0.4,
+      attachments: attachments.map(a => ({
+        type: a.type || 'image/jpeg',
+        data: a.data,
+        name: a.name || 'site-photo.jpg'
+      }))
+    });
 
-  for (const model of models) {
-    try {
-      console.log(`[MimaarAI] Trying ${model} for scan...`);
-      const content = await streamMimaarAI(req, res, {
-        message: prompt,
-        model,
-        temperature: 0.4,
-        engineeringContext: engCtx,
-        attachments: attachments.map(a => ({
-          type: a.type || 'image/jpeg',
-          data: a.data,
-          name: a.name || 'site-photo.jpg'
-        }))
-      });
-      console.log(`[MimaarAI] ${model} scan OK, length: ${content.length}`);
-
-      const arrayMatch = content.match(/\[[\s\S]*\]/);
-      let snags = [];
-      if (arrayMatch) {
-        snags = JSON.parse(arrayMatch[0]);
-        if (!Array.isArray(snags)) snags = [snags];
-      } else {
-        const objMatch = content.match(/\{[\s\S]*\}/);
-        if (objMatch) snags = [JSON.parse(objMatch[0])];
-      }
-      res.write(`data: ${JSON.stringify({ type: 'result', model, snags })}\n\n`);
-      res.write('data: [DONE]\n\n');
-      return res.end();
-    } catch (err) {
-      console.log(`[MimaarAI] ${model} scan FAILED: ${err.message}`);
-      continue;
+    const arrayMatch = content.match(/\[[\s\S]*\]/);
+    let snags = [];
+    if (arrayMatch) {
+      snags = JSON.parse(arrayMatch[0]);
+      if (!Array.isArray(snags)) snags = [snags];
+    } else {
+      const objMatch = content.match(/\{[\s\S]*\}/);
+      if (objMatch) snags = [JSON.parse(objMatch[0])];
     }
-  }
-
-  if (!res.headersSent) {
-    res.status(503).json({ error: 'AI scan unavailable. Please login to MimaarAI first.' });
-  } else {
-    res.write(`data: ${JSON.stringify({ type: 'error', error: 'All models failed' })}\n\n`);
-    res.end();
+    res.json({ success: true, snags });
+  } catch (err) {
+    console.error('[AI Scan] Failed:', err.message);
+    res.status(503).json({ error: 'AI scan failed. Please login to MimaarAI first.' });
   }
 });
 

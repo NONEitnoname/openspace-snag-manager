@@ -356,39 +356,6 @@ async function doDelete(id, btn) {
 // AI Categorize (single snag)
 // ────────────────────────────────────────────
 
-// Helper: consume SSE stream from our server
-async function consumeSSE(response, onChunk, onStatus) {
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let fullText = '';
-  let result = null;
-
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    const chunk = decoder.decode(value, { stream: true });
-    for (const line of chunk.split('\n')) {
-      if (!line.startsWith('data: ')) continue;
-      const payload = line.slice(6).trim();
-      if (payload === '[DONE]' || !payload) continue;
-      try {
-        const data = JSON.parse(payload);
-        if (data.type === 'chunk' && data.content) {
-          fullText += data.content;
-          if (onChunk) onChunk(fullText, data.content);
-        }
-        if (data.type === 'status' && onStatus) onStatus(data.message);
-        if (data.type === 'heartbeat') continue; // keepalive, ignore
-        if (data.type === 'result') result = data;
-        if (data.type === 'error') throw new Error(data.error);
-      } catch (e) {
-        if (e.message && !e.message.includes('JSON')) throw e;
-      }
-    }
-  }
-  return { fullText, result };
-}
-
 async function aiCategorize() {
   const desc = document.getElementById('f-description').value.trim();
   if (!desc) return toast('Enter a description first', 'error');
@@ -396,7 +363,12 @@ async function aiCategorize() {
   const btn = document.getElementById('aiBtn');
   btn.disabled = true;
   btn.classList.add('loading');
-  btn.textContent = 'Connecting to MimaarAI...';
+  const startTime = Date.now();
+  const timer = setInterval(() => {
+    const elapsed = Math.floor((Date.now() - startTime) / 1000);
+    btn.textContent = `Analyzing with MimaarAI... ${elapsed}s`;
+  }, 1000);
+  btn.textContent = 'Analyzing with MimaarAI... 0s';
 
   try {
     const res = await fetch('/api/snags/ai-categorize', {
@@ -404,29 +376,20 @@ async function aiCategorize() {
       headers: mimaraiHeaders(),
       body: JSON.stringify({ description: desc })
     });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'AI failed');
 
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      throw new Error(err.error || `Failed (${res.status})`);
-    }
-
-    const { result } = await consumeSSE(res,
-      (fullText) => { btn.textContent = 'Analyzing: ' + fullText.slice(-60).replace(/[{}\[\]"]/g, '').trim() + '...'; },
-      (status) => { btn.textContent = status; }
-    );
-
-    if (result) {
-      if (result.category) setSelectValue('f-category', result.category);
-      if (result.priority) setSelectValue('f-priority', result.priority);
-      if (result.trade) setSelectValue('f-trade', result.trade);
-      if (result.rootCause) document.getElementById('f-rootcause').value = result.rootCause;
-      if (result.recommendation) document.getElementById('f-recommendation').value = result.recommendation;
-      if (result.effort) document.getElementById('f-effort').value = result.effort;
-      toast(`Categorized by MimaarAI (${result.model || 'AI'})`, 'success');
-    }
+    if (data.category) setSelectValue('f-category', data.category);
+    if (data.priority) setSelectValue('f-priority', data.priority);
+    if (data.trade) setSelectValue('f-trade', data.trade);
+    if (data.rootCause) document.getElementById('f-rootcause').value = data.rootCause;
+    if (data.recommendation) document.getElementById('f-recommendation').value = data.recommendation;
+    if (data.effort) document.getElementById('f-effort').value = data.effort;
+    toast('Categorized by MimaarAI', 'success');
   } catch (e) {
     toast(e.message || 'AI categorization failed', 'error');
   } finally {
+    clearInterval(timer);
     btn.disabled = false;
     btn.classList.remove('loading');
     btn.innerHTML = 'AI Auto-Categorize (MimaarAI)';
@@ -472,41 +435,34 @@ async function aiScanPhotos() {
       return { type: f.type, data: btoa(binary), name: f.name };
     }));
 
-    btn.textContent = 'MimaarAI analyzing...';
-    results.innerHTML = '<p style="color:var(--text-muted);font-size:13px">AI is inspecting the site photo...</p>';
+    const startTime = Date.now();
+    const timer = setInterval(() => {
+      const elapsed = Math.floor((Date.now() - startTime) / 1000);
+      btn.textContent = `MimaarAI analyzing... ${elapsed}s`;
+      results.innerHTML = `<p style="color:var(--text-muted);font-size:13px">AI is inspecting the site photo... ${elapsed}s</p>`;
+    }, 1000);
+    btn.textContent = 'MimaarAI analyzing... 0s';
+    results.innerHTML = '<p style="color:var(--text-muted);font-size:13px">AI is inspecting the site photo... 0s</p>';
 
     const res = await fetch('/api/snags/ai-scan', {
       method: 'POST',
       headers: mimaraiHeaders(),
       body: JSON.stringify({ attachments })
     });
+    clearInterval(timer);
 
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      throw new Error(err.error || `Failed (${res.status})`);
-    }
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'AI scan failed');
 
-    // Stream SSE response — no timeout, keeps alive until MimaarAI responds
-    const { result } = await consumeSSE(res,
-      (fullText) => {
-        btn.textContent = 'Scanning: ' + fullText.slice(-50).replace(/[{}\[\]"]/g, '').trim() + '...';
-        results.innerHTML = `<p style="color:var(--teal);font-size:12px">AI analysis streaming...</p><pre style="font-size:11px;max-height:200px;overflow:auto;background:#f9fafb;padding:8px;border-radius:6px;white-space:pre-wrap">${esc(fullText.slice(-500))}</pre>`;
-      },
-      (status) => {
-        btn.textContent = status;
-        results.innerHTML = `<p style="color:var(--text-muted);font-size:13px">${esc(status)}</p>`;
-      }
-    );
-
-    if (!result || !result.snags || result.snags.length === 0) {
+    if (!data.snags || data.snags.length === 0) {
       results.innerHTML = '<p style="color:var(--low);font-size:13px;font-weight:600">No defects detected. Site looks good!</p>';
       toast('AI scan complete — no defects found', 'success');
       return;
     }
 
     // Render detected snags with accept buttons
-    results.innerHTML = `<p style="font-size:12px;color:var(--text-muted);margin-bottom:8px">${result.snags.length} potential snag(s) detected by MimaarAI (${result.model || 'AI'})</p>`;
-    result.snags.forEach((s, i) => {
+    results.innerHTML = `<p style="font-size:12px;color:var(--text-muted);margin-bottom:8px">${data.snags.length} potential snag(s) detected by MimaarAI</p>`;
+    data.snags.forEach((s, i) => {
       const div = document.createElement('div');
       div.className = 'scan-result-card';
       div.innerHTML = `
@@ -525,8 +481,8 @@ async function aiScanPhotos() {
       results.appendChild(div);
     });
 
-    window._scanDetectedSnags = result.snags;
-    toast(`${result.snags.length} snag(s) detected`, 'success');
+    window._scanDetectedSnags = data.snags;
+    toast(`${data.snags.length} snag(s) detected`, 'success');
   } catch (e) {
     results.innerHTML = '';
     toast(e.message || 'AI scan failed', 'error');
