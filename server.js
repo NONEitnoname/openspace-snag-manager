@@ -96,6 +96,93 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
+// ── Project Specs ────────────────────────────────────────────
+
+app.get('/api/specs', (req, res) => {
+  res.json(db.getAllSpecs({ category: req.query.category }));
+});
+
+app.post('/api/specs', (req, res) => {
+  const { name, description } = req.body;
+  if (!name || !description) return res.status(400).json({ error: 'Name and description required' });
+  res.status(201).json(db.createSpec(req.body));
+});
+
+app.put('/api/specs/:id', (req, res) => {
+  const spec = db.updateSpec(req.params.id, req.body);
+  if (!spec) return res.status(404).json({ error: 'Spec not found' });
+  res.json(spec);
+});
+
+app.delete('/api/specs/:id', (req, res) => {
+  if (!db.deleteSpec(req.params.id)) return res.status(404).json({ error: 'Spec not found' });
+  res.json({ success: true });
+});
+
+// Extract specs from uploaded PDF via MimaarAI
+const specUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 }, fileFilter: (req, f, cb) => cb(null, f.mimetype === 'application/pdf') });
+
+app.post('/api/specs/extract', specUpload.single('pdf'), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'PDF file required' });
+
+  const base64 = req.file.buffer.toString('base64');
+  const prompt = `Extract all construction project specifications and requirements from this document. Return ONLY a JSON array (no markdown, no code fences):
+[{"name":"short spec name","category":"Structural|MEP|Safety|Electrical|Plumbing|HVAC|Fire Protection|Finishing|Waterproofing|Facade|Other","description":"the requirement in 1-2 sentences","priority":"Critical|High|Medium|Low"}]
+Focus on: dimensions, materials, fire ratings, finish requirements, structural specs, MEP specs, safety requirements, SBC compliance items. Extract as many specific requirements as possible.`;
+
+  try {
+    const content = await collectMimaarAI(req, {
+      message: prompt,
+      model: 'mimarai-pro',
+      temperature: 0.2,
+      attachments: [{ type: 'application/pdf', data: base64, name: req.file.originalname }]
+    });
+
+    const arrayMatch = content.match(/\[[\s\S]*\]/);
+    if (!arrayMatch) return res.json({ specs: [], raw: content });
+    const specs = JSON.parse(arrayMatch[0]);
+    res.json({ specs: Array.isArray(specs) ? specs : [specs], source: req.file.originalname });
+  } catch (err) {
+    console.error('[Spec Extract] Failed:', err.message);
+    res.status(503).json({ error: 'Failed to extract specs. ' + err.message });
+  }
+});
+
+// Extract specs from OneDrive link
+app.post('/api/specs/onedrive', async (req, res) => {
+  const { url } = req.body;
+  if (!url) return res.status(400).json({ error: 'OneDrive URL required' });
+
+  try {
+    // Convert share link to download URL
+    const encoded = Buffer.from(url).toString('base64').replace(/=+$/, '').replace(/\//g, '_').replace(/\+/g, '-');
+    const downloadUrl = `https://api.onedrive.com/v1.0/shares/u!${encoded}/root/content`;
+    const fileRes = await fetch(downloadUrl, { redirect: 'follow' });
+    if (!fileRes.ok) throw new Error(`OneDrive returned ${fileRes.status}`);
+    const buf = Buffer.from(await fileRes.arrayBuffer());
+    const base64 = buf.toString('base64');
+
+    const prompt = `Extract all construction project specifications and requirements from this document. Return ONLY a JSON array (no markdown, no code fences):
+[{"name":"short spec name","category":"Structural|MEP|Safety|Electrical|Plumbing|HVAC|Fire Protection|Finishing|Waterproofing|Facade|Other","description":"the requirement in 1-2 sentences","priority":"Critical|High|Medium|Low"}]
+Focus on: dimensions, materials, fire ratings, finish requirements, structural specs, MEP specs, safety requirements.`;
+
+    const content = await collectMimaarAI(req, {
+      message: prompt,
+      model: 'mimarai-pro',
+      temperature: 0.2,
+      attachments: [{ type: 'application/pdf', data: base64, name: 'onedrive-spec.pdf' }]
+    });
+
+    const arrayMatch = content.match(/\[[\s\S]*\]/);
+    if (!arrayMatch) return res.json({ specs: [], raw: content });
+    const specs = JSON.parse(arrayMatch[0]);
+    res.json({ specs: Array.isArray(specs) ? specs : [specs], source: url });
+  } catch (err) {
+    console.error('[OneDrive Extract] Failed:', err.message);
+    res.status(503).json({ error: 'Failed: ' + err.message });
+  }
+});
+
 // Stats
 app.get('/api/snags/stats', (req, res) => {
   res.json(db.getStats());
@@ -219,6 +306,43 @@ app.post('/api/snags/:id/photos', upload.array('photos', 10), (req, res) => {
   res.json({ photos: all });
 });
 
+// Helper: build specs section for AI prompts
+function buildSpecsPrompt(category) {
+  const specs = db.getSpecsByCategory(category, 10);
+  if (specs.length === 0) return '';
+  return 'PROJECT SPECS — check compliance and flag violations:\n' +
+    specs.map(s => `- ${s.name}: ${s.description}`).join('\n') + '\n\n';
+}
+
+// Non-streaming MimaarAI call — collects full response (for spec extraction)
+async function collectMimaarAI(req, { message, model, temperature, attachments }) {
+  const models = [model, 'mimarai-ultra', 'mimarai-advanced'];
+  for (const m of [...new Set(models)]) {
+    try {
+      const response = await fetch('https://mimarai.com/api/chat/enhanced/stream', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...mimaraiHeaders(req) },
+        body: JSON.stringify({
+          message, sessionId: `snag-${Date.now()}`, model: m,
+          temperature: temperature || 0.3, stream: true, isMobile: true,
+          ...(attachments ? { attachments } : {})
+        })
+      });
+      if (!response.ok) { console.log(`[MimaarAI] ${m} collect FAILED ${response.status}`); continue; }
+      const text = await response.text();
+      let content = '';
+      for (const line of text.split('\n')) {
+        if (!line.startsWith('data: ')) continue;
+        const payload = line.slice(6).trim();
+        if (!payload || payload === '[DONE]') continue;
+        try { const d = JSON.parse(payload); content += d.content || d.text || d.delta || ''; } catch {}
+      }
+      if (content.length > 0) { console.log(`[MimaarAI] ${m} collect OK, length: ${content.length}`); return content; }
+    } catch (err) { console.log(`[MimaarAI] ${m} collect FAILED: ${err.message}`); }
+  }
+  throw new Error('All MimaarAI models failed');
+}
+
 // SSE streaming passthrough: pipes MimaarAI stream → frontend in real-time
 // No fixed timeout — keeps connection alive with heartbeats until MimaarAI finishes or errors
 async function streamMimaarAI(req, res, { message, model, temperature, attachments, engineeringContext }) {
@@ -307,9 +431,10 @@ app.post('/api/snags/ai-categorize', async (req, res) => {
   const { description } = req.body;
   if (!description) return res.status(400).json({ error: 'Description is required' });
 
-  const prompt = `You are a construction QA/QC expert. Analyze this snag and respond ONLY with valid JSON (no markdown, no code fences):
+  const specsSection = buildSpecsPrompt(null);
+  const prompt = `${specsSection}You are a construction QA/QC expert. Analyze this snag and respond ONLY with valid JSON (no markdown, no code fences):
 "${description}"
-Return: {"category":"Structural|MEP|Finishing|Safety|Waterproofing|Electrical|Plumbing|HVAC|Fire Protection|Painting|Flooring|Ceiling|Doors & Windows|Facade|Landscaping|Other","priority":"Critical|High|Medium|Low","trade":"General Contractor|Electrical|Mechanical|Plumbing|HVAC|Fire Protection|Painting|Flooring|Glazing|Steelwork|Concrete|Drywall|Roofing|Landscaping|Other","rootCause":"1 sentence","recommendation":"1-2 sentences","effort":"Minor (<1hr)|Moderate (1-4hrs)|Major (4-8hrs)|Extensive (>8hrs)"}`;
+Return: {"category":"Structural|MEP|Finishing|Safety|Waterproofing|Electrical|Plumbing|HVAC|Fire Protection|Painting|Flooring|Ceiling|Doors & Windows|Facade|Landscaping|Other","priority":"Critical|High|Medium|Low","trade":"General Contractor|Electrical|Mechanical|Plumbing|HVAC|Fire Protection|Painting|Flooring|Glazing|Steelwork|Concrete|Drywall|Roofing|Landscaping|Other","rootCause":"1 sentence","recommendation":"1-2 sentences","effort":"Minor (<1hr)|Moderate (1-4hrs)|Major (4-8hrs)|Extensive (>8hrs)","specViolations":["list any project spec violations, or empty array if none"]}`;
 
   const models = ['mimarai-ultra', 'mimarai-pro', 'mimarai-advanced'];
   const engCtx = { sbcMode: true, stream: 'structural', category: 'inspection', type: 'qa_qc' };
@@ -350,9 +475,10 @@ app.post('/api/snags/ai-scan', async (req, res) => {
     return res.status(400).json({ error: 'At least one photo is required' });
   }
 
-  const prompt = `Look at these construction site photos. List all visible defects, quality issues, and safety hazards as a JSON array. No markdown, no code fences, just the JSON array.
+  const specsSection = buildSpecsPrompt(null);
+  const prompt = `${specsSection}Look at these construction site photos. List all visible defects, quality issues, safety hazards, and any violations of project specs above. Return a JSON array only, no markdown.
 
-Each object: {"title":"short name","description":"detail","category":"Structural|MEP|Finishing|Safety|Waterproofing|Electrical|Plumbing|HVAC|Fire Protection|Painting|Flooring|Ceiling|Doors & Windows|Facade|Landscaping|Other","priority":"Critical|High|Medium|Low","trade":"responsible trade","rootCause":"cause","recommendation":"fix per SBC standards","effort":"Minor (<1hr)|Moderate (1-4hrs)|Major (4-8hrs)|Extensive (>8hrs)","location":"where in image"}
+Each object: {"title":"short name","description":"detail","category":"Structural|MEP|Finishing|Safety|Waterproofing|Electrical|Plumbing|HVAC|Fire Protection|Painting|Flooring|Ceiling|Doors & Windows|Facade|Landscaping|Other","priority":"Critical|High|Medium|Low","trade":"responsible trade","rootCause":"cause","recommendation":"fix per SBC standards","effort":"Minor (<1hr)|Moderate (1-4hrs)|Major (4-8hrs)|Extensive (>8hrs)","location":"where in image","specViolations":["any project spec violations"]}
 
 If no defects found, return: []`;
 

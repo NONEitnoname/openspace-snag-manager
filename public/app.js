@@ -13,6 +13,7 @@ document.addEventListener('DOMContentLoaded', () => {
   initViewer();
   loadStats();
   loadSnags();
+  loadSpecs();
   initPasteListener();
   updateAuthUI();
   document.getElementById('f-photos').addEventListener('change', handlePhotoSelect);
@@ -114,11 +115,12 @@ function openOriginal() {
 
 function switchTab(tab) {
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
-  ['form', 'list', 'scan'].forEach(t => {
+  ['form', 'list', 'scan', 'specs'].forEach(t => {
     const el = document.getElementById(`tab-${t}`);
     if (el) el.classList.toggle('active', t === tab);
   });
   if (tab === 'list') loadSnags();
+  if (tab === 'specs') loadSpecs();
 }
 
 // ────────────────────────────────────────────
@@ -855,4 +857,185 @@ async function captureAndAnalyze() {
       toast('Screen capture not supported - use Ctrl+V to paste a screenshot', 'error');
     }
   }
+}
+
+// ────────────────────────────────────────────
+// Project Specifications
+// ────────────────────────────────────────────
+
+let allSpecs = [];
+let extractedSpecs = [];
+let extractSource = '';
+
+async function loadSpecs() {
+  try {
+    const res = await fetch('/api/specs');
+    allSpecs = await res.json();
+    renderSpecs();
+    document.getElementById('specCount').textContent = allSpecs.length > 0 ? `(${allSpecs.length})` : '';
+  } catch (e) { console.error('Specs load error:', e); }
+}
+
+function renderSpecs() {
+  const list = document.getElementById('specList');
+  if (allSpecs.length === 0) {
+    list.innerHTML = '<div class="empty-state"><h3>No specs yet</h3><p>Upload a PDF or add specs manually.</p></div>';
+    return;
+  }
+  list.innerHTML = allSpecs.map(s => `
+    <div class="scan-result-card" style="margin-bottom:6px">
+      <div style="display:flex;justify-content:space-between;align-items:start;gap:8px">
+        <div style="flex:1">
+          <strong style="font-size:13px">${esc(s.name)}</strong>
+          <p style="font-size:12px;color:#555;margin:2px 0">${esc(s.description)}</p>
+          <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:3px">
+            ${s.category ? `<span class="pill category">${s.category}</span>` : '<span class="pill" style="background:#f3f4f6;color:#6b7280">All</span>'}
+            ${s.priority ? `<span class="pill ${s.priority}">${s.priority}</span>` : ''}
+            ${s.source !== 'manual' ? `<span style="font-size:10px;color:var(--text-muted)">${esc(s.source_file || s.source)}</span>` : ''}
+          </div>
+        </div>
+        <button onclick="deleteSpecItem('${s.id}')" style="padding:4px 8px;border:1px solid var(--border);border-radius:4px;background:#fff;cursor:pointer;font-size:11px;color:var(--critical)">Del</button>
+      </div>
+    </div>`).join('');
+}
+
+async function deleteSpecItem(id) {
+  await fetch(`/api/specs/${id}`, { method: 'DELETE' });
+  loadSpecs();
+  toast('Spec removed', 'success');
+}
+
+async function addManualSpec() {
+  const name = document.getElementById('f-specname').value.trim();
+  const description = document.getElementById('f-specdesc').value.trim();
+  if (!name || !description) return toast('Name and description required', 'error');
+
+  await fetch('/api/specs', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      name, description,
+      category: document.getElementById('f-speccategory').value || null,
+      priority: document.getElementById('f-specpriority').value,
+      source: 'manual'
+    })
+  });
+  document.getElementById('f-specname').value = '';
+  document.getElementById('f-specdesc').value = '';
+  loadSpecs();
+  toast('Spec added', 'success');
+}
+
+async function uploadSpecPDF() {
+  const file = document.getElementById('f-specpdf').files[0];
+  if (!file) return;
+
+  const status = document.getElementById('specExtractStatus');
+  status.innerHTML = '<p style="color:var(--teal);font-size:13px">Uploading and extracting specs with MimaarAI...</p>';
+
+  try {
+    const fd = new FormData();
+    fd.append('pdf', file);
+    const res = await fetch('/api/specs/extract', {
+      method: 'POST',
+      headers: { 'X-Mimarai-Token': mimaraiToken || '' },
+      body: fd
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error);
+
+    if (!data.specs || data.specs.length === 0) {
+      status.innerHTML = '<p style="color:var(--critical);font-size:13px">No specs found in document.</p>';
+      return;
+    }
+
+    extractedSpecs = data.specs;
+    extractSource = data.source || file.name;
+    status.innerHTML = '';
+    showSpecReview();
+  } catch (e) {
+    status.innerHTML = `<p style="color:var(--critical);font-size:13px">${esc(e.message)}</p>`;
+  }
+  document.getElementById('f-specpdf').value = '';
+}
+
+async function connectOneDriveSpec() {
+  const url = document.getElementById('f-onedrive').value.trim();
+  if (!url) return toast('Enter a OneDrive URL', 'error');
+
+  const status = document.getElementById('specExtractStatus');
+  status.innerHTML = '<p style="color:var(--teal);font-size:13px">Fetching from OneDrive and extracting...</p>';
+
+  try {
+    const res = await fetch('/api/specs/onedrive', {
+      method: 'POST',
+      headers: { ...mimaraiHeaders() },
+      body: JSON.stringify({ url })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error);
+
+    if (!data.specs || data.specs.length === 0) {
+      status.innerHTML = '<p style="color:var(--critical);font-size:13px">No specs found.</p>';
+      return;
+    }
+
+    extractedSpecs = data.specs;
+    extractSource = url;
+    status.innerHTML = '';
+    showSpecReview();
+  } catch (e) {
+    status.innerHTML = `<p style="color:var(--critical);font-size:13px">${esc(e.message)}</p>`;
+  }
+}
+
+function showSpecReview() {
+  const list = document.getElementById('specReviewList');
+  list.innerHTML = extractedSpecs.map((s, i) => `
+    <div class="scan-result-card" style="margin-bottom:8px" id="review-spec-${i}">
+      <div style="display:flex;gap:8px;align-items:start">
+        <input type="checkbox" checked data-idx="${i}" style="margin-top:4px">
+        <div style="flex:1">
+          <input type="text" value="${esc(s.name)}" data-field="name" data-idx="${i}" style="width:100%;font-weight:600;font-size:13px;border:1px solid var(--border);border-radius:4px;padding:4px 6px;margin-bottom:4px">
+          <textarea data-field="description" data-idx="${i}" rows="2" style="width:100%;font-size:12px;border:1px solid var(--border);border-radius:4px;padding:4px 6px">${esc(s.description)}</textarea>
+          <div style="display:flex;gap:6px;margin-top:4px">
+            <span class="pill category">${s.category || 'All'}</span>
+            <span class="pill ${s.priority}">${s.priority || 'Medium'}</span>
+          </div>
+        </div>
+      </div>
+    </div>`).join('');
+
+  document.getElementById('specReviewModal').style.display = 'flex';
+}
+
+async function confirmExtractedSpecs() {
+  const checkboxes = document.querySelectorAll('#specReviewList input[type="checkbox"]');
+  let saved = 0;
+
+  for (const cb of checkboxes) {
+    if (!cb.checked) continue;
+    const i = cb.dataset.idx;
+    const nameInput = document.querySelector(`input[data-field="name"][data-idx="${i}"]`);
+    const descInput = document.querySelector(`textarea[data-field="description"][data-idx="${i}"]`);
+    const spec = extractedSpecs[i];
+
+    await fetch('/api/specs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: nameInput?.value || spec.name,
+        description: descInput?.value || spec.description,
+        category: spec.category || null,
+        priority: spec.priority || 'Medium',
+        source: 'upload',
+        source_file: extractSource
+      })
+    });
+    saved++;
+  }
+
+  document.getElementById('specReviewModal').style.display = 'none';
+  loadSpecs();
+  toast(`${saved} spec(s) saved`, 'success');
 }

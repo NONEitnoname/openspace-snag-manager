@@ -59,6 +59,7 @@
         <div class="tab active" data-tab="form" onclick="switchTab('form')">+ Log Snag</div>
         <div class="tab" data-tab="list" onclick="switchTab('list')">Snag List</div>
         <div class="tab" data-tab="scan" onclick="switchTab('scan')">AI Scan</div>
+        <div class="tab" data-tab="specs" onclick="switchTab('specs')">Specs <span id="specCount" style="font-size:10px;opacity:0.7"></span></div>
       </div>
 
       <!-- Form Tab -->
@@ -224,6 +225,66 @@
 
           <div id="scanResults"></div>
         </div>
+      </div>
+
+      <!-- Specs Tab -->
+      <div class="tab-content" id="tab-specs">
+        <div class="form-container">
+          <h3 style="font-family:'Playfair Display',serif;font-size:16px;margin-bottom:4px">Project Specifications</h3>
+          <p style="font-size:12px;color:var(--text-muted);margin-bottom:16px">
+            Upload spec PDFs or add requirements manually. AI will check snags against these specs.
+          </p>
+
+          <!-- Upload PDF -->
+          <div class="form-group">
+            <label>Upload Spec PDF</label>
+            <div class="photo-upload" onclick="document.getElementById('f-specpdf').click()">
+              Upload PDF specification document (max 20MB)
+              <input type="file" id="f-specpdf" accept="application/pdf" onchange="uploadSpecPDF()">
+            </div>
+          </div>
+
+          <!-- OneDrive -->
+          <div class="form-group">
+            <label>Or OneDrive Link</label>
+            <div style="display:flex;gap:6px">
+              <input type="url" id="f-onedrive" placeholder="https://1drv.ms/..." style="flex:1;padding:8px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px">
+              <button onclick="connectOneDriveSpec()" style="padding:8px 14px;background:var(--teal);color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:12px;white-space:nowrap">Fetch</button>
+            </div>
+          </div>
+
+          <!-- Manual add -->
+          <details style="margin-bottom:12px">
+            <summary style="cursor:pointer;font-size:12px;font-weight:600;color:var(--text-muted)">+ Add spec manually</summary>
+            <div style="margin-top:8px">
+              <div class="form-group"><label>Spec Name</label><input type="text" id="f-specname" placeholder="Column Min Size"></div>
+              <div class="form-row">
+                <div class="form-group"><label>Category</label><select id="f-speccategory"><option value="">All</option><option>Structural</option><option>MEP</option><option>Safety</option><option>Electrical</option><option>Plumbing</option><option>HVAC</option><option>Fire Protection</option><option>Finishing</option><option>Waterproofing</option><option>Facade</option><option>Other</option></select></div>
+                <div class="form-group"><label>Priority</label><select id="f-specpriority"><option>High</option><option>Critical</option><option>Medium</option><option>Low</option></select></div>
+              </div>
+              <div class="form-group"><label>Requirement</label><textarea id="f-specdesc" rows="2" placeholder="Load-bearing columns min 400mm x 400mm"></textarea></div>
+              <button class="submit-btn" onclick="addManualSpec()">Add Spec</button>
+            </div>
+          </details>
+
+          <div id="specExtractStatus"></div>
+          <div id="specList"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Spec Review Modal -->
+  <div class="confirm-overlay" id="specReviewModal" style="display:none">
+    <div class="os-connect-box" style="max-width:560px;max-height:80vh;overflow-y:auto">
+      <h3>Review Extracted Specs</h3>
+      <p style="font-size:12px;color:var(--text-muted);margin-bottom:12px">
+        MimaarAI extracted these specifications. Edit, remove, or confirm them.
+      </p>
+      <div id="specReviewList"></div>
+      <div class="os-connect-actions" style="margin-top:12px">
+        <button class="submit-btn" onclick="confirmExtractedSpecs()">Save All</button>
+        <button class="cancel-btn" onclick="document.getElementById('specReviewModal').style.display='none'">Cancel</button>
       </div>
     </div>
   </div>

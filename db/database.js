@@ -31,11 +31,24 @@ db.exec(`
   )
 `);
 
-function generateId() {
+db.exec(`
+  CREATE TABLE IF NOT EXISTS project_specs (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    category TEXT,
+    description TEXT NOT NULL,
+    priority TEXT,
+    source TEXT,
+    source_file TEXT,
+    created_at TEXT DEFAULT (datetime('now'))
+  )
+`);
+
+function generateId(prefix) {
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
   let code = '';
   for (let i = 0; i < 6; i++) code += chars[crypto.randomInt(chars.length)];
-  return `SNG-${code}`;
+  return `${prefix || 'SNG'}-${code}`;
 }
 
 function getAllSnags({ status, priority, search, sort } = {}) {
@@ -126,4 +139,52 @@ function getStats() {
   return { total, open, inProgress, resolved, critical };
 }
 
-module.exports = { getAllSnags, getSnag, createSnag, updateSnag, deleteSnag, getStats };
+// Project Specs
+function getAllSpecs({ category } = {}) {
+  let sql = 'SELECT * FROM project_specs WHERE 1=1';
+  const params = [];
+  if (category) { sql += ' AND (category = ? OR category IS NULL)'; params.push(category); }
+  sql += ' ORDER BY created_at DESC';
+  return db.prepare(sql).all(...params);
+}
+
+function getSpec(id) {
+  return db.prepare('SELECT * FROM project_specs WHERE id = ?').get(id);
+}
+
+function createSpec(data) {
+  const id = generateId('SPEC');
+  db.prepare('INSERT INTO project_specs (id, name, category, description, priority, source, source_file) VALUES (?, ?, ?, ?, ?, ?, ?)')
+    .run(id, data.name, data.category || null, data.description, data.priority || null, data.source || 'manual', data.source_file || null);
+  return getSpec(id);
+}
+
+function updateSpec(id, data) {
+  const existing = getSpec(id);
+  if (!existing) return null;
+  const fields = ['name', 'category', 'description', 'priority'];
+  const updates = [];
+  const params = [];
+  for (const f of fields) { if (data[f] !== undefined) { updates.push(`${f} = ?`); params.push(data[f]); } }
+  if (updates.length === 0) return existing;
+  params.push(id);
+  db.prepare(`UPDATE project_specs SET ${updates.join(', ')} WHERE id = ?`).run(...params);
+  return getSpec(id);
+}
+
+function deleteSpec(id) {
+  if (!getSpec(id)) return false;
+  db.prepare('DELETE FROM project_specs WHERE id = ?').run(id);
+  return true;
+}
+
+function getSpecsByCategory(category, limit = 10) {
+  let sql = 'SELECT * FROM project_specs WHERE 1=1';
+  const params = [];
+  if (category) { sql += ' AND (category = ? OR category IS NULL)'; params.push(category); }
+  sql += ` ORDER BY CASE priority WHEN 'Critical' THEN 1 WHEN 'High' THEN 2 WHEN 'Medium' THEN 3 WHEN 'Low' THEN 4 ELSE 5 END LIMIT ?`;
+  params.push(limit);
+  return db.prepare(sql).all(...params);
+}
+
+module.exports = { getAllSnags, getSnag, createSnag, updateSnag, deleteSnag, getStats, getAllSpecs, getSpec, createSpec, updateSpec, deleteSpec, getSpecsByCategory };
