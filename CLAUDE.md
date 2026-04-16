@@ -55,20 +55,27 @@ iframe.src = "https://ksa.openspace.ai/ohplayer?site=..."; // Direct URL
 2. All AI requests include header: `X-Mimarai-Token: <jwt>`
 3. Server reads `req.headers['x-mimarai-token']` → sends as `Authorization: Bearer <token>` to MimaarAI
 
-### API Call Format
+### API Call Format — MUST use streaming endpoint
 ```js
-POST https://mimarai.com/api/chat/enhanced
+POST https://mimarai.com/api/chat/enhanced/stream   // NOT /api/chat/enhanced
 {
   message: "...",
   sessionId: "snag-<timestamp>",
-  model: "mimarai-ultra",  // or mimarai-pro, mimarai-advanced
-  temperature: 0.3
+  model: "mimarai-ultra",
+  temperature: 0.3,
+  stream: true,
+  engineeringContext: { sbcMode: true, stream: "structural", category: "inspection", type: "qa_qc" }
 }
 ```
+Response is SSE: `data: {"content":"..."}\n` lines, ending with `data: [DONE]`.
+Collect all `content` fields to get the full text.
 
-### CRITICAL — Do NOT send these fields:
-- **`engineeringContext`**: Triggers MimaarAI's extended thinking auto-enable, which crashes with `max_tokens < thinking.budget_tokens`. The prompt itself provides sufficient context.
-- **`extendedThinking: { enabled: false }`**: MimaarAI's `shouldAutoEnableExtendedThinking()` overrides `enabled: false` (checks `!extendedThinking?.enabled` which is `!false === true`). Just omit the field entirely.
+### CRITICAL — Use /stream, NOT /enhanced
+The non-streaming endpoint (`/api/chat/enhanced`) has `max_tokens: 8000`. MimaarAI auto-enables extended thinking for engineering queries (complexity score 17+), setting `budget_tokens: 20000`. Since `20000 > 8000`, it crashes with `max_tokens must be greater than thinking.budget_tokens`.
+
+The streaming endpoint (`/api/chat/enhanced/stream`) has `max_tokens: 64000` — always sufficient. The `callMimaarAI()` helper in `server.js` handles SSE parsing.
+
+`engineeringContext` is safe to send — it enables SBC-aware RAG analysis. The thinking crash is purely a max_tokens issue on the non-streaming endpoint.
 
 ### Model Fallback Order
 - **Categorize**: `mimarai-ultra` → `mimarai-pro` → `mimarai-advanced`
