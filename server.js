@@ -220,14 +220,14 @@ app.post('/api/snags/:id/photos', upload.array('photos', 10), (req, res) => {
 });
 
 // SSE streaming passthrough: pipes MimaarAI stream → frontend in real-time
-// Uses /stream endpoint (max_tokens:64000) to avoid thinking budget crash
-async function streamMimaarAI(req, res, { message, model, temperature, attachments, engineeringContext, timeoutMs }) {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs || 180000);
+// No fixed timeout — keeps connection alive with heartbeats until MimaarAI finishes or errors
+async function streamMimaarAI(req, res, { message, model, temperature, attachments, engineeringContext }) {
+  // Send keepalive every 15s so proxies/browsers don't kill the connection
+  let heartbeat;
+  let clientDisconnected = false;
 
   try {
     const response = await fetch('https://mimarai.com/api/chat/enhanced/stream', {
-      signal: controller.signal,
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...mimaraiHeaders(req) },
       body: JSON.stringify({
@@ -254,12 +254,26 @@ async function streamMimaarAI(req, res, { message, model, temperature, attachmen
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.flushHeaders();
 
+    // Detect client disconnect
+    res.on('close', () => { clientDisconnected = true; });
+
+    // Send heartbeat keepalives every 15s so Railway/browser don't timeout
+    heartbeat = setInterval(() => {
+      if (!clientDisconnected) {
+        res.write(`data: ${JSON.stringify({ type: 'heartbeat' })}\n\n`);
+      }
+    }, 15000);
+
+    // Send initial status
+    res.write(`data: ${JSON.stringify({ type: 'status', message: 'Connected to MimaarAI, waiting for response...' })}\n\n`);
+
     // Pipe MimaarAI SSE → frontend, accumulate content
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let fullContent = '';
 
     while (true) {
+      if (clientDisconnected) break;
       const { done, value } = await reader.read();
       if (done) break;
       const chunk = decoder.decode(value, { stream: true });
@@ -269,20 +283,21 @@ async function streamMimaarAI(req, res, { message, model, temperature, attachmen
         if (!payload || payload === '[DONE]') continue;
         try {
           const data = JSON.parse(payload);
-          // MimaarAI sends content in various formats
           const text = data.content || data.text || data.delta || '';
           if (text) {
             fullContent += text;
-            res.write(`data: ${JSON.stringify({ type: 'chunk', content: text })}\n\n`);
+            if (!clientDisconnected) {
+              res.write(`data: ${JSON.stringify({ type: 'chunk', content: text })}\n\n`);
+            }
           }
         } catch {}
       }
     }
 
-    clearTimeout(timeout);
+    clearInterval(heartbeat);
     return fullContent;
   } catch (err) {
-    clearTimeout(timeout);
+    if (heartbeat) clearInterval(heartbeat);
     throw err;
   }
 }
@@ -316,11 +331,6 @@ Return: {"category":"Structural|MEP|Finishing|Safety|Waterproofing|Electrical|Pl
       return res.end();
     } catch (err) {
       console.log(`[MimaarAI] ${model} categorize FAILED: ${err.message}`);
-      if (err.name === 'AbortError') {
-        if (!res.headersSent) return res.status(504).json({ error: 'AI request timed out (60s)' });
-        res.write(`data: ${JSON.stringify({ type: 'error', error: 'Request timed out' })}\n\n`);
-        return res.end();
-      }
       continue;
     }
   }
@@ -379,11 +389,6 @@ If no defects found, return: []`;
       return res.end();
     } catch (err) {
       console.log(`[MimaarAI] ${model} scan FAILED: ${err.message}`);
-      if (err.name === 'AbortError') {
-        if (!res.headersSent) return res.status(504).json({ error: 'AI scan timed out (60s)' });
-        res.write(`data: ${JSON.stringify({ type: 'error', error: 'Scan timed out' })}\n\n`);
-        return res.end();
-      }
       continue;
     }
   }

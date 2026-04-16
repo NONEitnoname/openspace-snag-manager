@@ -355,7 +355,7 @@ async function doDelete(id, btn) {
 // ────────────────────────────────────────────
 
 // Helper: consume SSE stream from our server
-async function consumeSSE(response, onChunk) {
+async function consumeSSE(response, onChunk, onStatus) {
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let fullText = '';
@@ -375,6 +375,8 @@ async function consumeSSE(response, onChunk) {
           fullText += data.content;
           if (onChunk) onChunk(fullText, data.content);
         }
+        if (data.type === 'status' && onStatus) onStatus(data.message);
+        if (data.type === 'heartbeat') continue; // keepalive, ignore
         if (data.type === 'result') result = data;
         if (data.type === 'error') throw new Error(data.error);
       } catch (e) {
@@ -406,9 +408,10 @@ async function aiCategorize() {
       throw new Error(err.error || `Failed (${res.status})`);
     }
 
-    const { result } = await consumeSSE(res, (fullText) => {
-      btn.textContent = 'Analyzing: ' + fullText.slice(-60).replace(/[{}\[\]"]/g, '').trim() + '...';
-    });
+    const { result } = await consumeSSE(res,
+      (fullText) => { btn.textContent = 'Analyzing: ' + fullText.slice(-60).replace(/[{}\[\]"]/g, '').trim() + '...'; },
+      (status) => { btn.textContent = status; }
+    );
 
     if (result) {
       if (result.category) setSelectValue('f-category', result.category);
@@ -481,11 +484,17 @@ async function aiScanPhotos() {
       throw new Error(err.error || `Failed (${res.status})`);
     }
 
-    // Stream SSE response
-    const { result } = await consumeSSE(res, (fullText) => {
-      btn.textContent = 'Scanning: ' + fullText.slice(-50).replace(/[{}\[\]"]/g, '').trim() + '...';
-      results.innerHTML = `<p style="color:var(--teal);font-size:12px">AI analysis streaming...</p><pre style="font-size:11px;max-height:200px;overflow:auto;background:#f9fafb;padding:8px;border-radius:6px;white-space:pre-wrap">${esc(fullText.slice(-500))}</pre>`;
-    });
+    // Stream SSE response — no timeout, keeps alive until MimaarAI responds
+    const { result } = await consumeSSE(res,
+      (fullText) => {
+        btn.textContent = 'Scanning: ' + fullText.slice(-50).replace(/[{}\[\]"]/g, '').trim() + '...';
+        results.innerHTML = `<p style="color:var(--teal);font-size:12px">AI analysis streaming...</p><pre style="font-size:11px;max-height:200px;overflow:auto;background:#f9fafb;padding:8px;border-radius:6px;white-space:pre-wrap">${esc(fullText.slice(-500))}</pre>`;
+      },
+      (status) => {
+        btn.textContent = status;
+        results.innerHTML = `<p style="color:var(--text-muted);font-size:13px">${esc(status)}</p>`;
+      }
+    );
 
     if (!result || !result.snags || result.snags.length === 0) {
       results.innerHTML = '<p style="color:var(--low);font-size:13px;font-weight:600">No defects detected. Site looks good!</p>';
