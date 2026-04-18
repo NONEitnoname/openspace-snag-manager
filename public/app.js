@@ -449,38 +449,16 @@ async function aiScanPhotos() {
       headers: mimaraiHeaders(),
       body: JSON.stringify({ attachments })
     });
-
-    // Parse SSE response (scan uses SSE for keepalive during long vision analysis)
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let data = null;
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      const chunk = decoder.decode(value, { stream: true });
-      for (const line of chunk.split('\n')) {
-        if (!line.startsWith('data: ')) continue;
-        const payload = line.slice(6).trim();
-        if (payload === '[DONE]' || !payload) continue;
-        try {
-          const evt = JSON.parse(payload);
-          if (evt.type === 'heartbeat') continue;
-          if (evt.type === 'status') {
-            const elapsed = Math.floor((Date.now() - startTime) / 1000);
-            btn.textContent = `${evt.message} ${elapsed}s`;
-            results.innerHTML = `<p style="color:var(--text-muted);font-size:13px">${esc(evt.message)} ${elapsed}s</p>`;
-          }
-          if (evt.type === 'result') data = evt;
-          if (evt.type === 'error') throw new Error(evt.error);
-        } catch (e) {
-          if (e.message && !e.message.includes('JSON')) throw e;
-        }
-      }
-    }
     clearInterval(timer);
 
-    if (!data || !data.snags || data.snags.length === 0) {
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'AI scan failed');
+
+    if (data.metadata?.processingTimeMs) {
+      console.log(`[AI Scan] Completed in ${data.metadata.processingTimeMs}ms, ${data.snags?.length || 0} findings`);
+    }
+
+    if (!data.snags || data.snags.length === 0) {
       results.innerHTML = '<p style="color:var(--low);font-size:13px;font-weight:600">No defects detected. Site looks good!</p>';
       toast('AI scan complete — no defects found', 'success');
       return;
@@ -499,8 +477,10 @@ async function aiScanPhotos() {
             <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px">
               <span class="pill ${s.priority}">${s.priority}</span>
               ${s.category ? `<span class="pill category">${s.category}</span>` : ''}
+              ${s.codeReference ? `<span style="font-size:10px;color:#0369a1;background:#f0f9ff;padding:1px 6px;border-radius:8px">${esc(s.codeReference)}</span>` : ''}
               ${s.trade ? `<span style="font-size:10px;color:var(--text-muted)">${esc(s.trade)}</span>` : ''}
             </div>
+            ${s.recommendation ? `<p style="font-size:11px;color:var(--teal);margin-top:4px">${esc(s.recommendation)}</p>` : ''}
           </div>
           <button onclick="acceptScanSnag(${i})" style="padding:6px 12px;background:var(--teal);color:#fff;border:none;border-radius:5px;cursor:pointer;font-size:11px;white-space:nowrap">+ Add</button>
         </div>`;
