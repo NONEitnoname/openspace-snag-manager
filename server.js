@@ -335,7 +335,12 @@ async function collectMimaarAI(req, { message, model, temperature, attachments }
         if (!line.startsWith('data: ')) continue;
         const payload = line.slice(6).trim();
         if (!payload || payload === '[DONE]') continue;
-        try { const d = JSON.parse(payload); content += d.content || d.text || d.delta || ''; } catch {}
+        try {
+          const d = JSON.parse(payload);
+          let chunk = d.content || d.text || d.delta || '';
+          if (typeof chunk === 'object') chunk = chunk.text || chunk.value || JSON.stringify(chunk);
+          if (typeof chunk === 'string') content += chunk;
+        } catch {}
       }
       if (content.length > 0) { console.log(`[MimaarAI] ${m} collect OK, length: ${content.length}`); return content; }
     } catch (err) { console.log(`[MimaarAI] ${m} collect FAILED: ${err.message}`); }
@@ -355,6 +360,7 @@ Return: {"category":"Structural|MEP|Finishing|Safety|Waterproofing|Electrical|Pl
 
   try {
     const content = await collectMimaarAI(req, { message: prompt, model: 'mimarai-ultra', temperature: 0.3 });
+    console.log(`[AI Categorize] Content preview: ${content.slice(0, 200)}`);
     const jsonMatch = content.match(/\{[\s\S]*\}/);
     if (!jsonMatch) return res.json({ success: true, raw: content });
     const result = JSON.parse(jsonMatch[0]);
@@ -391,6 +397,7 @@ If no defects found, return: []`;
       }))
     });
 
+    console.log(`[AI Scan] Content preview: ${content.slice(0, 200)}`);
     const arrayMatch = content.match(/\[[\s\S]*\]/);
     let snags = [];
     if (arrayMatch) {
