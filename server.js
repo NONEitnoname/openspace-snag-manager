@@ -371,7 +371,7 @@ Return: {"category":"Structural|MEP|Finishing|Safety|Waterproofing|Electrical|Pl
   }
 });
 
-// AI Scan — vision-based defect detection via MimaarAI chat streaming
+// AI Scan — uses MimaarAI /api/v1/analyze (dedicated vision API)
 app.post('/api/snags/ai-scan', async (req, res) => {
   const { attachments } = req.body;
   if (!attachments || attachments.length === 0) {
@@ -379,37 +379,54 @@ app.post('/api/snags/ai-scan', async (req, res) => {
   }
 
   const specsSection = buildSpecsPrompt(null);
-  const prompt = `${specsSection}Look at these construction site photos. List all visible defects, quality issues, safety hazards. Return a JSON array only, no markdown.
-
-Each object: {"title":"short name","description":"detail","category":"Structural|MEP|Finishing|Safety|Waterproofing|Electrical|Plumbing|HVAC|Fire Protection|Painting|Flooring|Ceiling|Doors & Windows|Facade|Landscaping|Other","priority":"Critical|High|Medium|Low","trade":"responsible trade","rootCause":"cause","recommendation":"fix","effort":"Minor (<1hr)|Moderate (1-4hrs)|Major (4-8hrs)|Extensive (>8hrs)","location":"where in image"}
-
-If no defects found, return: []`;
+  const queryText = specsSection
+    ? `Check for construction defects, safety hazards, and compliance with these project specs:\n${specsSection}`
+    : 'Check this construction site photo for all defects, safety hazards, and quality issues';
 
   try {
-    console.log(`[AI Scan] Calling collectMimaarAI with ${attachments.length} attachment(s)`);
-    const content = await collectMimaarAI(req, {
-      message: prompt,
-      model: 'mimarai-pro',
-      temperature: 0.4,
-      attachments: attachments.map(a => ({
-        type: a.type || 'image/jpeg',
-        data: a.data,
-        name: a.name || 'site-photo.jpg'
-      }))
+    const img = attachments[0];
+    const authToken = req.headers['x-mimarai-token'];
+    console.log(`[AI Scan] Calling /api/v1/analyze (${img.name || 'image'}, ${Math.round((img.data?.length || 0) / 1024)}KB)`);
+
+    const response = await fetch('https://mimarai.com/api/v1/analyze', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(authToken ? { 'Authorization': `Bearer ${authToken}` } : {})
+      },
+      body: JSON.stringify({
+        imageData: img.data,
+        mimeType: img.type || 'image/jpeg',
+        query: queryText,
+        reviewType: 'safety',
+        includeCoordinates: false
+      })
     });
 
-    console.log(`[AI Scan] Content preview: ${content.slice(0, 300)}`);
-    const arrayMatch = content.match(/\[[\s\S]*\]/);
-    let snags = [];
-    if (arrayMatch) {
-      snags = JSON.parse(arrayMatch[0]);
-      if (!Array.isArray(snags)) snags = [snags];
-    } else {
-      const objMatch = content.match(/\{[\s\S]*\}/);
-      if (objMatch) snags = [JSON.parse(objMatch[0])];
+    if (!response.ok) {
+      const errBody = await response.json().catch(() => ({}));
+      console.log(`[AI Scan] /api/v1/analyze FAILED ${response.status}:`, errBody.error || errBody.message);
+      throw new Error(errBody.error || errBody.message || `API returned ${response.status}`);
     }
-    console.log(`[AI Scan] Parsed ${snags.length} snag(s)`);
-    res.json({ success: true, snags });
+
+    const data = await response.json();
+    console.log(`[AI Scan] /api/v1/analyze OK: ${data.analysis?.findings?.length || 0} findings in ${data.metadata?.processingTimeMs}ms`);
+
+    const snags = (data.analysis?.findings || []).map(f => ({
+      title: f.text?.split('.')[0]?.slice(0, 80) || f.text?.slice(0, 80) || 'Defect',
+      description: f.text || '',
+      category: f.category || 'Safety',
+      priority: f.severity === 'CRITICAL' ? 'Critical' : f.severity === 'MAJOR' ? 'High' : f.severity === 'MINOR' ? 'Low' : 'Medium',
+      trade: f.category === 'Safety' ? 'Site Safety / HSE' : 'General Contractor',
+      rootCause: '',
+      recommendation: f.recommendation || '',
+      effort: '',
+      location: '',
+      codeReference: f.codeReference || '',
+      specViolations: []
+    }));
+
+    res.json({ success: true, snags, metadata: data.metadata });
   } catch (err) {
     console.error('[AI Scan] Failed:', err.message);
     res.status(503).json({ error: 'AI scan failed: ' + err.message });
