@@ -364,11 +364,20 @@ async function aiCategorize() {
   btn.disabled = true;
   btn.classList.add('loading');
   const startTime = Date.now();
+  const catStages = [
+    { at: 0, msg: 'Connecting to MimaarAI...' },
+    { at: 3, msg: 'Analyzing snag description...' },
+    { at: 8, msg: 'Checking SBC standards...' },
+    { at: 15, msg: 'Classifying category and priority...' },
+    { at: 25, msg: 'Generating recommendations...' },
+  ];
+  let catStage = 0;
   const timer = setInterval(() => {
     const elapsed = Math.floor((Date.now() - startTime) / 1000);
-    btn.textContent = `Analyzing with MimaarAI... ${elapsed}s`;
+    while (catStage < catStages.length - 1 && catStages[catStage + 1].at <= elapsed) catStage++;
+    btn.textContent = `${catStages[catStage].msg} ${elapsed}s`;
   }, 1000);
-  btn.textContent = 'Analyzing with MimaarAI... 0s';
+  btn.textContent = catStages[0].msg;
 
   try {
     const res = await fetch('/api/snags/ai-categorize', {
@@ -436,13 +445,33 @@ async function aiScanPhotos() {
     }));
 
     const startTime = Date.now();
+    const stages = [
+      { at: 0, msg: 'Uploading image to MimaarAI...' },
+      { at: 3, msg: 'MimaarAI Vision processing image...' },
+      { at: 8, msg: 'Detecting construction elements...' },
+      { at: 15, msg: 'Checking SBC compliance standards...' },
+      { at: 22, msg: 'Analyzing defects and safety hazards...' },
+      { at: 30, msg: 'Cross-referencing building codes...' },
+      { at: 40, msg: 'Generating findings and recommendations...' },
+      { at: 55, msg: 'Finalizing analysis report...' },
+    ];
+    let currentStage = 0;
     const timer = setInterval(() => {
       const elapsed = Math.floor((Date.now() - startTime) / 1000);
-      btn.textContent = `MimaarAI analyzing... ${elapsed}s`;
-      results.innerHTML = `<p style="color:var(--text-muted);font-size:13px">AI is inspecting the site photo... ${elapsed}s</p>`;
+      while (currentStage < stages.length - 1 && stages[currentStage + 1].at <= elapsed) currentStage++;
+      const stageMsg = stages[currentStage].msg;
+      btn.textContent = `${stageMsg} ${elapsed}s`;
+      results.innerHTML = `
+        <div style="padding:12px">
+          <p style="color:var(--teal);font-size:13px;font-weight:600;margin-bottom:8px">${esc(stageMsg)}</p>
+          <div style="background:var(--border);border-radius:4px;height:4px;overflow:hidden">
+            <div style="background:var(--teal);height:100%;width:${Math.min(95, elapsed * 1.5)}%;transition:width 1s"></div>
+          </div>
+          <p style="color:var(--text-muted);font-size:11px;margin-top:6px">${elapsed}s elapsed</p>
+        </div>`;
     }, 1000);
-    btn.textContent = 'MimaarAI analyzing... 0s';
-    results.innerHTML = '<p style="color:var(--text-muted);font-size:13px">AI is inspecting the site photo... 0s</p>';
+    btn.textContent = stages[0].msg;
+    results.innerHTML = `<p style="color:var(--teal);font-size:13px">${stages[0].msg}</p>`;
 
     const res = await fetch('/api/snags/ai-scan', {
       method: 'POST',
