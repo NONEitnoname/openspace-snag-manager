@@ -449,12 +449,38 @@ async function aiScanPhotos() {
       headers: mimaraiHeaders(),
       body: JSON.stringify({ attachments })
     });
+
+    // Parse SSE response (scan uses SSE for keepalive during long vision analysis)
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let data = null;
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      const chunk = decoder.decode(value, { stream: true });
+      for (const line of chunk.split('\n')) {
+        if (!line.startsWith('data: ')) continue;
+        const payload = line.slice(6).trim();
+        if (payload === '[DONE]' || !payload) continue;
+        try {
+          const evt = JSON.parse(payload);
+          if (evt.type === 'heartbeat') continue;
+          if (evt.type === 'status') {
+            const elapsed = Math.floor((Date.now() - startTime) / 1000);
+            btn.textContent = `${evt.message} ${elapsed}s`;
+            results.innerHTML = `<p style="color:var(--text-muted);font-size:13px">${esc(evt.message)} ${elapsed}s</p>`;
+          }
+          if (evt.type === 'result') data = evt;
+          if (evt.type === 'error') throw new Error(evt.error);
+        } catch (e) {
+          if (e.message && !e.message.includes('JSON')) throw e;
+        }
+      }
+    }
     clearInterval(timer);
 
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'AI scan failed');
-
-    if (!data.snags || data.snags.length === 0) {
+    if (!data || !data.snags || data.snags.length === 0) {
       results.innerHTML = '<p style="color:var(--low);font-size:13px;font-weight:600">No defects detected. Site looks good!</p>';
       toast('AI scan complete — no defects found', 'success');
       return;

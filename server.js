@@ -372,11 +372,24 @@ Return: {"category":"Structural|MEP|Finishing|Safety|Waterproofing|Electrical|Pl
 });
 
 // AI Scan — vision-based defect detection
+// Uses SSE keepalive to prevent Railway's 60s proxy timeout (vision takes 90-120s)
 app.post('/api/snags/ai-scan', async (req, res) => {
   const { attachments } = req.body;
   if (!attachments || attachments.length === 0) {
     return res.status(400).json({ error: 'At least one photo is required' });
   }
+
+  // Start SSE immediately so Railway sees activity and doesn't timeout
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders();
+
+  // Send heartbeat every 10s to keep connection alive
+  const heartbeat = setInterval(() => {
+    res.write(`data: ${JSON.stringify({ type: 'heartbeat' })}\n\n`);
+  }, 10000);
+  res.write(`data: ${JSON.stringify({ type: 'status', message: 'Analyzing with MimaarAI...' })}\n\n`);
 
   const specsSection = buildSpecsPrompt(null);
   const prompt = `${specsSection}Look at these construction site photos. List all visible defects, quality issues, safety hazards, and any violations of project specs above. Return a JSON array only, no markdown.
@@ -396,6 +409,7 @@ If no defects found, return: []`;
         name: a.name || 'site-photo.jpg'
       }))
     });
+    clearInterval(heartbeat);
 
     console.log(`[AI Scan] Content preview: ${content.slice(0, 200)}`);
     const arrayMatch = content.match(/\[[\s\S]*\]/);
@@ -407,10 +421,14 @@ If no defects found, return: []`;
       const objMatch = content.match(/\{[\s\S]*\}/);
       if (objMatch) snags = [JSON.parse(objMatch[0])];
     }
-    res.json({ success: true, snags });
+    res.write(`data: ${JSON.stringify({ type: 'result', success: true, snags })}\n\n`);
+    res.write('data: [DONE]\n\n');
+    res.end();
   } catch (err) {
+    clearInterval(heartbeat);
     console.error('[AI Scan] Failed:', err.message);
-    res.status(503).json({ error: 'AI scan failed. Please login to MimaarAI first.' });
+    res.write(`data: ${JSON.stringify({ type: 'error', error: 'AI scan failed: ' + err.message })}\n\n`);
+    res.end();
   }
 });
 
