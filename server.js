@@ -354,9 +354,11 @@ app.post('/api/snags/ai-categorize', async (req, res) => {
   if (!description) return res.status(400).json({ error: 'Description is required' });
 
   const specsSection = buildSpecsPrompt(null);
-  const prompt = `${specsSection}You are a construction QA/QC expert. Analyze this snag and respond ONLY with valid JSON (no markdown, no code fences):
+  const prompt = `Saudi Building Code SBC construction QA/QC snag analysis — structural concrete steel reinforcement SBC 304, electrical SBC 401, mechanical SBC 501, fire protection SBC 801, safety OSHA.
+
+${specsSection ? 'PROJECT SPECS:\n' + specsSection + '\n' : ''}Analyze this construction snag and respond ONLY with valid JSON (no markdown, no code fences):
 "${description}"
-Return: {"category":"Structural|MEP|Finishing|Safety|Waterproofing|Electrical|Plumbing|HVAC|Fire Protection|Painting|Flooring|Ceiling|Doors & Windows|Facade|Landscaping|Other","priority":"Critical|High|Medium|Low","trade":"General Contractor|Electrical|Mechanical|Plumbing|HVAC|Fire Protection|Painting|Flooring|Glazing|Steelwork|Concrete|Drywall|Roofing|Landscaping|Other","rootCause":"1 sentence","recommendation":"1-2 sentences","effort":"Minor (<1hr)|Moderate (1-4hrs)|Major (4-8hrs)|Extensive (>8hrs)","specViolations":["list any project spec violations, or empty array if none"]}`;
+Return: {"category":"Structural|MEP|Finishing|Safety|Waterproofing|Electrical|Plumbing|HVAC|Fire Protection|Painting|Flooring|Ceiling|Doors & Windows|Facade|Landscaping|Other","priority":"Critical|High|Medium|Low","trade":"General Contractor|Electrical|Mechanical|Plumbing|HVAC|Fire Protection|Painting|Flooring|Glazing|Steelwork|Concrete|Drywall|Roofing|Landscaping|Other","rootCause":"1 sentence with SBC code reference if applicable","recommendation":"1-2 sentences citing relevant SBC section","effort":"Minor (<1hr)|Moderate (1-4hrs)|Major (4-8hrs)|Extensive (>8hrs)","specViolations":["list any project spec violations, or empty array if none"]}`;
 
   try {
     const content = await collectMimaarAI(req, { message: prompt, model: 'mimarai-ultra', temperature: 0.3 });
@@ -379,9 +381,19 @@ app.post('/api/snags/ai-scan', async (req, res) => {
   }
 
   const specsSection = buildSpecsPrompt(null);
-  const queryText = specsSection
-    ? `Check for construction defects, safety hazards, and compliance with these project specs:\n${specsSection}`
-    : 'Check this construction site photo for all defects, safety hazards, and quality issues';
+
+  // Query packed with SBC engineering keywords so MimaarAI's RAG finds relevant standards
+  const queryText = `Saudi Building Code SBC construction site inspection — analyze this photo for:
+
+STRUCTURAL: concrete cracks, spalling, exposed rebar, column damage, beam deflection, foundation settlement, reinforcement cover per SBC 304, structural steel connections per SBC 306
+SAFETY: fall protection, scaffolding compliance, PPE violations, excavation shoring, fire exits, egress paths, guardrails, barricades per SBC 801, OSHA 1926
+MEP: exposed wiring, missing junction boxes, plumbing leaks, HVAC duct damage, fire sprinkler obstructions, electrical panel clearance per SBC 401, SBC 501
+FIRE PROTECTION: fire-rated assemblies, firestopping, sprinkler coverage, fire extinguisher placement, emergency lighting per SBC 801, NFPA 13
+FINISHING: tile alignment, paint defects, waterproofing membrane, ceiling grid damage, door/window installation, facade cladding
+HOUSEKEEPING: debris, trip hazards, material storage, access routes, waste management
+
+${specsSection ? 'PROJECT SPECIFICATIONS TO CHECK COMPLIANCE:\n' + specsSection + '\n' : ''}
+List ALL visible defects, safety violations, quality issues, and code non-compliance. For each finding cite the relevant SBC section number.`;
 
   try {
     const img = attachments[0];
