@@ -374,15 +374,24 @@ Return: {"category":"Structural|MEP|Finishing|Safety|Waterproofing|Electrical|Pl
 });
 
 // AI Scan — uses MimaarAI /api/v1/analyze (dedicated vision API)
+// SSE wrapper with heartbeats to prevent Railway's 60s proxy timeout
 app.post('/api/snags/ai-scan', async (req, res) => {
   const { attachments } = req.body;
   if (!attachments || attachments.length === 0) {
     return res.status(400).json({ error: 'At least one photo is required' });
   }
 
-  const specsSection = buildSpecsPrompt(null);
+  // Start SSE immediately — heartbeats keep Railway proxy alive during long vision analysis
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders();
 
-  // Query with discipline keywords so MimaarAI's RAG finds relevant SBC standards
+  const heartbeat = setInterval(() => {
+    res.write(`data: ${JSON.stringify({ type: 'heartbeat' })}\n\n`);
+  }, 10000);
+
+  const specsSection = buildSpecsPrompt(null);
   const queryText = `Saudi Building Code construction site inspection — analyze this photo for defects and code compliance:
 
 STRUCTURAL: concrete cracks, spalling, exposed rebar, column damage, beam deflection, reinforcement cover, steel connections
@@ -415,10 +424,13 @@ List ALL visible defects, safety violations, and quality issues. Cite applicable
       })
     });
 
+    clearInterval(heartbeat);
+
     if (!response.ok) {
       const errBody = await response.json().catch(() => ({}));
       console.log(`[AI Scan] /api/v1/analyze FAILED ${response.status}:`, errBody.error || errBody.message);
-      throw new Error(errBody.error || errBody.message || `API returned ${response.status}`);
+      res.write(`data: ${JSON.stringify({ type: 'error', error: errBody.error || errBody.message || 'Analysis failed' })}\n\n`);
+      return res.end();
     }
 
     const data = await response.json();
@@ -438,10 +450,14 @@ List ALL visible defects, safety violations, and quality issues. Cite applicable
       specViolations: []
     }));
 
-    res.json({ success: true, snags, metadata: data.metadata });
+    res.write(`data: ${JSON.stringify({ type: 'result', success: true, snags, metadata: data.metadata })}\n\n`);
+    res.write('data: [DONE]\n\n');
+    res.end();
   } catch (err) {
+    clearInterval(heartbeat);
     console.error('[AI Scan] Failed:', err.message);
-    res.status(503).json({ error: 'AI scan failed: ' + err.message });
+    res.write(`data: ${JSON.stringify({ type: 'error', error: 'AI scan failed: ' + err.message })}\n\n`);
+    res.end();
   }
 });
 

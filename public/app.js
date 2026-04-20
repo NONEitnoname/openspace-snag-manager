@@ -478,16 +478,29 @@ async function aiScanPhotos() {
       headers: mimaraiHeaders(),
       body: JSON.stringify({ attachments })
     });
+
+    // Parse SSE (server uses heartbeats to keep Railway alive during long analysis)
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let data = null;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      for (const line of decoder.decode(value, { stream: true }).split('\n')) {
+        if (!line.startsWith('data: ')) continue;
+        const payload = line.slice(6).trim();
+        if (!payload || payload === '[DONE]') continue;
+        try {
+          const evt = JSON.parse(payload);
+          if (evt.type === 'heartbeat') continue;
+          if (evt.type === 'result') data = evt;
+          if (evt.type === 'error') throw new Error(evt.error);
+        } catch (e) { if (e.message && !e.message.includes('JSON')) throw e; }
+      }
+    }
     clearInterval(timer);
 
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'AI scan failed');
-
-    if (data.metadata?.processingTimeMs) {
-      console.log(`[AI Scan] Completed in ${data.metadata.processingTimeMs}ms, ${data.snags?.length || 0} findings`);
-    }
-
-    if (!data.snags || data.snags.length === 0) {
+    if (!data || !data.snags || data.snags.length === 0) {
       results.innerHTML = '<p style="color:var(--low);font-size:13px;font-weight:600">No defects detected. Site looks good!</p>';
       toast('AI scan complete — no defects found', 'success');
       return;
