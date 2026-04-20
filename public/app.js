@@ -500,7 +500,10 @@ async function aiScanPhotos() {
           if (evt.type === 'heartbeat') continue;
           if (evt.type === 'result') data = evt;
           if (evt.type === 'error') throw new Error(evt.error);
-        } catch (e) { if (e.message && !e.message.includes('JSON')) throw e; }
+        } catch (e) {
+          if (e.message && !e.message.includes('JSON')) throw e;
+          console.warn('[SSE] Failed to parse:', payload.slice(0, 100));
+        }
       }
     }
     // Process any remaining buffer
@@ -511,7 +514,10 @@ async function aiScanPhotos() {
           const evt = JSON.parse(payload);
           if (evt.type === 'result') data = evt;
           if (evt.type === 'error') throw new Error(evt.error);
-        } catch (e) { if (e.message && !e.message.includes('JSON')) throw e; }
+        } catch (e) {
+          if (e.message && !e.message.includes('JSON')) throw e;
+          console.warn('[SSE] Buffer parse failed:', payload.slice(0, 100));
+        }
       }
     }
     clearInterval(timer);
@@ -548,9 +554,11 @@ async function aiScanPhotos() {
     window._scanDetectedSnags = data.snags;
     toast(`${data.snags.length} snag(s) detected`, 'success');
   } catch (e) {
-    results.innerHTML = '';
+    console.error('[AI Scan] Frontend error:', e);
+    results.innerHTML = `<p style="color:var(--critical);font-size:13px">${esc(e.message || 'AI scan failed')}</p>`;
     toast(e.message || 'AI scan failed', 'error');
   } finally {
+    clearInterval(timer);
     btn.disabled = false;
     btn.classList.remove('loading');
     btn.textContent = 'AI Scan for Snags (MimaarAI)';
