@@ -383,7 +383,13 @@ app.get('/api/snags/ai-scan/status/:jobId', async (req, res) => {
     const response = await fetch(`https://mimarai.com/api/v1/analyze/${req.params.jobId}`, {
       headers: { ...(authToken ? { 'Authorization': `Bearer ${authToken}` } : {}) }
     });
-    const data = await response.json();
+    const text = await response.text();
+    let data;
+    try { data = JSON.parse(text); } catch {
+      console.log(`[AI Scan Poll] Non-JSON response (${response.status}): ${text.slice(0, 100)}`);
+      return res.json({ status: 'processing', stage: 'processing', stageMessage: 'Waiting for MimaarAI...', progress: 0 });
+    }
+    console.log(`[AI Scan Poll] ${req.params.jobId}: status=${data.status}, stage=${data.stage}, progress=${data.progress}`);
 
     // Map MimaarAI's response to our frontend format
     if (data.status === 'completed') {
