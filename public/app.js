@@ -445,35 +445,10 @@ async function aiScanPhotos() {
     }));
 
     const startTime = Date.now();
-    const stages = [
-      { at: 0, msg: 'Uploading image to MimaarAI...' },
-      { at: 3, msg: 'MimaarAI Vision processing image...' },
-      { at: 8, msg: 'Detecting construction elements...' },
-      { at: 15, msg: 'Checking SBC compliance standards...' },
-      { at: 22, msg: 'Analyzing defects and safety hazards...' },
-      { at: 30, msg: 'Cross-referencing building codes...' },
-      { at: 40, msg: 'Generating findings and recommendations...' },
-      { at: 55, msg: 'Finalizing analysis report...' },
-    ];
-    let currentStage = 0;
-    const timer = setInterval(() => {
-      const elapsed = Math.floor((Date.now() - startTime) / 1000);
-      while (currentStage < stages.length - 1 && stages[currentStage + 1].at <= elapsed) currentStage++;
-      const stageMsg = stages[currentStage].msg;
-      btn.textContent = `${stageMsg} ${elapsed}s`;
-      results.innerHTML = `
-        <div style="padding:12px">
-          <p style="color:var(--teal);font-size:13px;font-weight:600;margin-bottom:8px">${esc(stageMsg)}</p>
-          <div style="background:var(--border);border-radius:4px;height:4px;overflow:hidden">
-            <div style="background:var(--teal);height:100%;width:${Math.min(95, elapsed * 1.5)}%;transition:width 1s"></div>
-          </div>
-          <p style="color:var(--text-muted);font-size:11px;margin-top:6px">${elapsed}s elapsed</p>
-        </div>`;
-    }, 1000);
-    btn.textContent = stages[0].msg;
-    results.innerHTML = `<p style="color:var(--teal);font-size:13px">${stages[0].msg}</p>`;
+    btn.textContent = 'Submitting to MimaarAI...';
+    results.innerHTML = '<p style="color:var(--teal);font-size:13px">Uploading image...</p>';
 
-    // Submit job — returns immediately with jobId
+    // 1. Submit job — returns jobId immediately
     const submitRes = await fetch('/api/snags/ai-scan', {
       method: 'POST',
       headers: mimaraiHeaders(),
@@ -483,13 +458,13 @@ async function aiScanPhotos() {
     if (!submitRes.ok) throw new Error(submitData.error || 'Failed to start scan');
 
     const { jobId } = submitData;
-    console.log(`[AI Scan] Job started: ${jobId}`);
+    console.log(`[AI Scan] Job submitted: ${jobId}`);
 
-    // Poll for results every 5s
+    // 2. Poll for results every 1s — real progress from MimaarAI backend
     let data = null;
     while (true) {
-      await new Promise(r => setTimeout(r, 5000));
-      const statusRes = await fetch(`/api/snags/ai-scan/status/${jobId}`);
+      await new Promise(r => setTimeout(r, 1000));
+      const statusRes = await fetch(`/api/snags/ai-scan/status/${jobId}`, { headers: mimaraiHeaders() });
       const job = await statusRes.json();
 
       if (job.status === 'complete') {
@@ -498,11 +473,21 @@ async function aiScanPhotos() {
       } else if (job.status === 'error') {
         throw new Error(job.error || 'Analysis failed');
       }
-      // Still processing — update UI
+
+      // Update UI with real backend progress
       const elapsed = Math.floor((Date.now() - startTime) / 1000);
-      while (currentStage < stages.length - 1 && stages[currentStage + 1].at <= elapsed) currentStage++;
+      const stageMsg = job.stageMessage || job.stage || 'Processing...';
+      const progress = job.progress || Math.min(90, elapsed);
+      btn.textContent = `${stageMsg} ${elapsed}s`;
+      results.innerHTML = `
+        <div style="padding:12px">
+          <p style="color:var(--teal);font-size:13px;font-weight:600;margin-bottom:8px">${esc(stageMsg)}</p>
+          <div style="background:var(--border);border-radius:4px;height:4px;overflow:hidden">
+            <div style="background:var(--teal);height:100%;width:${progress}%;transition:width 0.5s"></div>
+          </div>
+          <p style="color:var(--text-muted);font-size:11px;margin-top:6px">${elapsed}s elapsed</p>
+        </div>`;
     }
-    clearInterval(timer);
 
     if (!data || !data.snags || data.snags.length === 0) {
       results.innerHTML = '<p style="color:var(--low);font-size:13px;font-weight:600">No defects detected. Site looks good!</p>';
