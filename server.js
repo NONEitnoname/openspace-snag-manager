@@ -387,8 +387,15 @@ app.get('/api/snags/ai-scan/status/:jobId', async (req, res) => {
     let data;
     try { data = JSON.parse(text); } catch {
       console.log(`[AI Scan Poll] Non-JSON response (${response.status}): ${text.slice(0, 100)}`);
-      return res.json({ status: 'processing', stage: 'processing', stageMessage: 'Waiting for MimaarAI...', progress: 0 });
+      return res.json({ status: 'error', error: `MimaarAI returned ${response.status}` });
     }
+
+    // Handle MimaarAI error responses (auth failure, job not found, etc.)
+    if (!response.ok || data.success === false) {
+      console.log(`[AI Scan Poll] Error: ${data.message || data.error || response.status}`);
+      return res.json({ status: 'error', error: data.message || data.error || `MimaarAI error ${response.status}` });
+    }
+
     console.log(`[AI Scan Poll] ${req.params.jobId}: status=${data.status}, stage=${data.stage}, progress=${data.progress}`);
 
     // Map MimaarAI's response to our frontend format
