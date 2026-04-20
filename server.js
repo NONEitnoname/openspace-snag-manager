@@ -407,50 +407,72 @@ List ALL visible defects, safety violations, and quality issues. Cite applicable
   try {
     const img = attachments[0];
     const authToken = req.headers['x-mimarai-token'];
-    console.log(`[AI Scan] Calling /api/v1/analyze (${img.name || 'image'}, ${Math.round((img.data?.length || 0) / 1024)}KB)`);
 
-    const response = await fetch('https://mimarai.com/api/v1/analyze', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(authToken ? { 'Authorization': `Bearer ${authToken}` } : {})
-      },
-      body: JSON.stringify({
-        imageData: img.data,
-        mimeType: img.type || 'image/jpeg',
-        query: queryText,
-        reviewType: 'safety',
-        includeCoordinates: false
-      })
-    });
+    // Try /api/v1/analyze up to 2 times (Gemini may timeout on first attempt)
+    let snags = [];
+    let metadata = null;
 
-    clearInterval(heartbeat);
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        console.log(`[AI Scan] Attempt ${attempt}: /api/v1/analyze (${img.name || 'image'}, ${Math.round((img.data?.length || 0) / 1024)}KB)`);
+        res.write(`data: ${JSON.stringify({ type: 'status', message: `MimaarAI analyzing (attempt ${attempt})...` })}\n\n`);
 
-    if (!response.ok) {
-      const errBody = await response.json().catch(() => ({}));
-      console.log(`[AI Scan] /api/v1/analyze FAILED ${response.status}:`, errBody.error || errBody.message);
-      res.write(`data: ${JSON.stringify({ type: 'error', error: errBody.error || errBody.message || 'Analysis failed' })}\n\n`);
-      return res.end();
+        const response = await fetch('https://mimarai.com/api/v1/analyze', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(authToken ? { 'Authorization': `Bearer ${authToken}` } : {})
+          },
+          body: JSON.stringify({
+            imageData: img.data,
+            mimeType: img.type || 'image/jpeg',
+            query: queryText,
+            reviewType: 'safety',
+            includeCoordinates: false
+          })
+        });
+
+        if (!response.ok) {
+          const errBody = await response.json().catch(() => ({}));
+          console.log(`[AI Scan] Attempt ${attempt} FAILED ${response.status}:`, errBody.error || errBody.message);
+          if (attempt < 2) { continue; } // retry
+          throw new Error(errBody.error || errBody.message || `API returned ${response.status}`);
+        }
+
+        const data = await response.json();
+        metadata = data.metadata;
+        console.log(`[AI Scan] Attempt ${attempt} OK: ${data.analysis?.findings?.length || 0} findings in ${data.metadata?.processingTimeMs}ms`);
+
+        // If 0 findings and success:false (Gemini timeout), retry once
+        if ((!data.success || (data.analysis?.findings?.length || 0) === 0) && attempt < 2) {
+          console.log(`[AI Scan] 0 findings (likely Gemini timeout) — retrying...`);
+          continue;
+        }
+
+        snags = (data.analysis?.findings || []).map(f => ({
+          title: f.text?.split('.')[0]?.slice(0, 80) || f.text?.slice(0, 80) || 'Defect',
+          description: f.text || '',
+          category: f.category || 'Safety',
+          priority: f.severity === 'CRITICAL' ? 'Critical' : f.severity === 'MAJOR' ? 'High' : f.severity === 'MINOR' ? 'Low' : 'Medium',
+          trade: f.category === 'Safety' ? 'Site Safety / HSE' : 'General Contractor',
+          rootCause: '',
+          recommendation: f.recommendation || '',
+          effort: '',
+          location: '',
+          codeReference: f.codeReference || '',
+          specViolations: []
+        }));
+        break; // success
+      } catch (attemptErr) {
+        console.log(`[AI Scan] Attempt ${attempt} error: ${attemptErr.message}`);
+        if (attempt >= 2) throw attemptErr;
+        // Wait 2s before retry
+        await new Promise(r => setTimeout(r, 2000));
+      }
     }
 
-    const data = await response.json();
-    console.log(`[AI Scan] /api/v1/analyze OK: ${data.analysis?.findings?.length || 0} findings in ${data.metadata?.processingTimeMs}ms`);
-
-    const snags = (data.analysis?.findings || []).map(f => ({
-      title: f.text?.split('.')[0]?.slice(0, 80) || f.text?.slice(0, 80) || 'Defect',
-      description: f.text || '',
-      category: f.category || 'Safety',
-      priority: f.severity === 'CRITICAL' ? 'Critical' : f.severity === 'MAJOR' ? 'High' : f.severity === 'MINOR' ? 'Low' : 'Medium',
-      trade: f.category === 'Safety' ? 'Site Safety / HSE' : 'General Contractor',
-      rootCause: '',
-      recommendation: f.recommendation || '',
-      effort: '',
-      location: '',
-      codeReference: f.codeReference || '',
-      specViolations: []
-    }));
-
-    res.write(`data: ${JSON.stringify({ type: 'result', success: true, snags, metadata: data.metadata })}\n\n`);
+    clearInterval(heartbeat);
+    res.write(`data: ${JSON.stringify({ type: 'result', success: true, snags, metadata })}\n\n`);
     res.write('data: [DONE]\n\n');
     res.end();
   } catch (err) {
