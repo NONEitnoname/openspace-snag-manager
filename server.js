@@ -456,13 +456,17 @@ List ALL visible defects, safety violations, and quality issues. Cite applicable
     });
 
     const data = await response.json();
-    if (!response.ok) {
+    console.log(`[AI Scan] MimaarAI response ${response.status}:`, JSON.stringify(data).slice(0, 500));
+
+    if (!response.ok && response.status !== 202) {
       console.log(`[AI Scan] Submit FAILED ${response.status}:`, data.error || data.message);
       return res.status(response.status).json({ error: data.error || data.message || 'Submit failed' });
     }
 
-    console.log(`[AI Scan] Job submitted: ${data.jobId}`);
-    res.status(202).json({ jobId: data.jobId, status: 'processing' });
+    // MimaarAI may return jobId in different fields
+    const jobId = data.jobId || data.id || data.job_id;
+    console.log(`[AI Scan] Job submitted: ${jobId}`);
+    res.status(202).json({ jobId, status: 'processing', pollUrl: data.pollUrl });
   } catch (err) {
     console.error('[AI Scan] Submit failed:', err.message);
     res.status(503).json({ error: 'Cannot reach MimaarAI: ' + err.message });
