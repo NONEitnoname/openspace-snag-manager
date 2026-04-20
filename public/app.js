@@ -480,19 +480,35 @@ async function aiScanPhotos() {
     });
 
     // Parse SSE (server uses heartbeats to keep Railway alive during long analysis)
+    // Buffer partial lines across chunks since large results may split mid-JSON
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let data = null;
+    let buffer = '';
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
-      for (const line of decoder.decode(value, { stream: true }).split('\n')) {
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || ''; // keep incomplete last line in buffer
+      for (const line of lines) {
         if (!line.startsWith('data: ')) continue;
         const payload = line.slice(6).trim();
         if (!payload || payload === '[DONE]') continue;
         try {
           const evt = JSON.parse(payload);
           if (evt.type === 'heartbeat') continue;
+          if (evt.type === 'result') data = evt;
+          if (evt.type === 'error') throw new Error(evt.error);
+        } catch (e) { if (e.message && !e.message.includes('JSON')) throw e; }
+      }
+    }
+    // Process any remaining buffer
+    if (buffer.startsWith('data: ')) {
+      const payload = buffer.slice(6).trim();
+      if (payload && payload !== '[DONE]') {
+        try {
+          const evt = JSON.parse(payload);
           if (evt.type === 'result') data = evt;
           if (evt.type === 'error') throw new Error(evt.error);
         } catch (e) { if (e.message && !e.message.includes('JSON')) throw e; }
