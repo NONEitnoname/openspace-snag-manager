@@ -473,52 +473,34 @@ async function aiScanPhotos() {
     btn.textContent = stages[0].msg;
     results.innerHTML = `<p style="color:var(--teal);font-size:13px">${stages[0].msg}</p>`;
 
-    const res = await fetch('/api/snags/ai-scan', {
+    // Submit job — returns immediately with jobId
+    const submitRes = await fetch('/api/snags/ai-scan', {
       method: 'POST',
       headers: mimaraiHeaders(),
       body: JSON.stringify({ attachments })
     });
+    const submitData = await submitRes.json();
+    if (!submitRes.ok) throw new Error(submitData.error || 'Failed to start scan');
 
-    // Parse SSE (server uses heartbeats to keep Railway alive during long analysis)
-    // Buffer partial lines across chunks since large results may split mid-JSON
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
+    const { jobId } = submitData;
+    console.log(`[AI Scan] Job started: ${jobId}`);
+
+    // Poll for results every 5s
     let data = null;
-    let buffer = '';
     while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop() || ''; // keep incomplete last line in buffer
-      for (const line of lines) {
-        if (!line.startsWith('data: ')) continue;
-        const payload = line.slice(6).trim();
-        if (!payload || payload === '[DONE]') continue;
-        try {
-          const evt = JSON.parse(payload);
-          if (evt.type === 'heartbeat') continue;
-          if (evt.type === 'result') data = evt;
-          if (evt.type === 'error') throw new Error(evt.error);
-        } catch (e) {
-          if (e.message && !e.message.includes('JSON')) throw e;
-          console.warn('[SSE] Failed to parse:', payload.slice(0, 100));
-        }
+      await new Promise(r => setTimeout(r, 5000));
+      const statusRes = await fetch(`/api/snags/ai-scan/status/${jobId}`);
+      const job = await statusRes.json();
+
+      if (job.status === 'complete') {
+        data = job;
+        break;
+      } else if (job.status === 'error') {
+        throw new Error(job.error || 'Analysis failed');
       }
-    }
-    // Process any remaining buffer
-    if (buffer.startsWith('data: ')) {
-      const payload = buffer.slice(6).trim();
-      if (payload && payload !== '[DONE]') {
-        try {
-          const evt = JSON.parse(payload);
-          if (evt.type === 'result') data = evt;
-          if (evt.type === 'error') throw new Error(evt.error);
-        } catch (e) {
-          if (e.message && !e.message.includes('JSON')) throw e;
-          console.warn('[SSE] Buffer parse failed:', payload.slice(0, 100));
-        }
-      }
+      // Still processing — update UI
+      const elapsed = Math.floor((Date.now() - startTime) / 1000);
+      while (currentStage < stages.length - 1 && stages[currentStage + 1].at <= elapsed) currentStage++;
     }
     clearInterval(timer);
 

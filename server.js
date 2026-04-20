@@ -373,49 +373,50 @@ Return: {"category":"Structural|MEP|Finishing|Safety|Waterproofing|Electrical|Pl
   }
 });
 
-// AI Scan — uses MimaarAI /api/v1/analyze (dedicated vision API)
-// SSE wrapper with heartbeats to prevent Railway's 60s proxy timeout
+// AI Scan — uses polling pattern to avoid Railway's 60s proxy timeout
+// POST starts job → returns jobId → frontend polls GET /status/:jobId
+const scanJobs = new Map(); // jobId → { status, snags, error, startedAt }
+
+app.get('/api/snags/ai-scan/status/:jobId', (req, res) => {
+  const job = scanJobs.get(req.params.jobId);
+  if (!job) return res.status(404).json({ error: 'Job not found' });
+  res.json(job);
+  // Clean up completed jobs after delivery
+  if (job.status === 'complete' || job.status === 'error') {
+    setTimeout(() => scanJobs.delete(req.params.jobId), 60000);
+  }
+});
+
 app.post('/api/snags/ai-scan', async (req, res) => {
   const { attachments } = req.body;
   if (!attachments || attachments.length === 0) {
     return res.status(400).json({ error: 'At least one photo is required' });
   }
 
-  // Start SSE immediately — heartbeats keep Railway proxy alive during long vision analysis
-  res.setHeader('Content-Type', 'text/event-stream');
-  res.setHeader('Cache-Control', 'no-cache');
-  res.setHeader('Connection', 'keep-alive');
-  res.flushHeaders();
+  // Return jobId immediately (within 1s) — browser polls for result
+  const jobId = `scan-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+  scanJobs.set(jobId, { status: 'processing', snags: null, error: null, startedAt: Date.now() });
+  res.json({ jobId, status: 'processing' });
 
-  const heartbeat = setInterval(() => {
-    res.write(`data: ${JSON.stringify({ type: 'heartbeat' })}\n\n`);
-  }, 10000);
-
+  // Run analysis in background (async, not awaited — response already sent)
+  const img = attachments[0];
+  const authToken = req.headers['x-mimarai-token'];
   const specsSection = buildSpecsPrompt(null);
   const queryText = `Saudi Building Code construction site inspection — analyze this photo for defects and code compliance:
-
-STRUCTURAL: concrete cracks, spalling, exposed rebar, column damage, beam deflection, reinforcement cover, steel connections
-SAFETY: fall protection, scaffolding, PPE, excavation shoring, fire exits, egress paths, guardrails, barricades
-MEP: exposed wiring, junction boxes, plumbing leaks, HVAC duct damage, fire sprinkler obstructions, electrical panel clearance
-FIRE PROTECTION: fire-rated assemblies, firestopping, sprinkler coverage, fire extinguisher placement, emergency lighting
-FINISHING: tile alignment, paint defects, waterproofing membrane, ceiling grid, door/window installation, facade cladding
+STRUCTURAL: concrete cracks, spalling, exposed rebar, column damage, reinforcement cover, steel connections
+SAFETY: fall protection, scaffolding, PPE, excavation shoring, fire exits, guardrails, barricades
+MEP: exposed wiring, junction boxes, plumbing leaks, HVAC duct damage, fire sprinkler obstructions
+FIRE PROTECTION: fire-rated assemblies, firestopping, sprinkler coverage, fire extinguisher placement
+FINISHING: tile alignment, paint defects, waterproofing membrane, ceiling grid, facade cladding
 HOUSEKEEPING: debris, trip hazards, material storage, access routes
+${specsSection ? '\nPROJECT SPECS:\n' + specsSection : ''}
+List ALL visible defects, safety violations, and quality issues. Cite applicable SBC sections.`;
 
-${specsSection ? 'PROJECT SPECIFICATIONS TO CHECK:\n' + specsSection + '\n' : ''}
-List ALL visible defects, safety violations, and quality issues. Cite applicable SBC sections from the standards database.`;
-
-  try {
-    const img = attachments[0];
-    const authToken = req.headers['x-mimarai-token'];
-
-    // Try /api/v1/analyze up to 2 times (Gemini may timeout on first attempt)
-    let snags = [];
-    let metadata = null;
-
+  (async () => {
     for (let attempt = 1; attempt <= 2; attempt++) {
       try {
-        console.log(`[AI Scan] Attempt ${attempt}: /api/v1/analyze (${img.name || 'image'}, ${Math.round((img.data?.length || 0) / 1024)}KB)`);
-        res.write(`data: ${JSON.stringify({ type: 'status', message: `MimaarAI analyzing (attempt ${attempt})...` })}\n\n`);
+        console.log(`[AI Scan] Job ${jobId} attempt ${attempt}`);
+        scanJobs.set(jobId, { ...scanJobs.get(jobId), status: `processing (attempt ${attempt})` });
 
         const response = await fetch('https://mimarai.com/api/v1/analyze', {
           method: 'POST',
@@ -434,22 +435,21 @@ List ALL visible defects, safety violations, and quality issues. Cite applicable
 
         if (!response.ok) {
           const errBody = await response.json().catch(() => ({}));
-          console.log(`[AI Scan] Attempt ${attempt} FAILED ${response.status}:`, errBody.error || errBody.message);
-          if (attempt < 2) { continue; } // retry
-          throw new Error(errBody.error || errBody.message || `API returned ${response.status}`);
+          console.log(`[AI Scan] Job ${jobId} attempt ${attempt} FAILED ${response.status}`);
+          if (attempt < 2) { await new Promise(r => setTimeout(r, 2000)); continue; }
+          throw new Error(errBody.error || errBody.message || `API ${response.status}`);
         }
 
         const data = await response.json();
-        metadata = data.metadata;
-        console.log(`[AI Scan] Attempt ${attempt} OK: ${data.analysis?.findings?.length || 0} findings in ${data.metadata?.processingTimeMs}ms`);
+        console.log(`[AI Scan] Job ${jobId} attempt ${attempt} OK: ${data.analysis?.findings?.length || 0} findings in ${data.metadata?.processingTimeMs}ms`);
 
-        // If 0 findings and success:false (Gemini timeout), retry once
         if ((!data.success || (data.analysis?.findings?.length || 0) === 0) && attempt < 2) {
-          console.log(`[AI Scan] 0 findings (likely Gemini timeout) — retrying...`);
+          console.log(`[AI Scan] Job ${jobId} 0 findings — retrying...`);
+          await new Promise(r => setTimeout(r, 2000));
           continue;
         }
 
-        snags = (data.analysis?.findings || []).map(f => ({
+        const snags = (data.analysis?.findings || []).map(f => ({
           title: f.text?.split('.')[0]?.slice(0, 80) || f.text?.slice(0, 80) || 'Defect',
           description: f.text || '',
           category: f.category || 'Safety',
@@ -462,25 +462,19 @@ List ALL visible defects, safety violations, and quality issues. Cite applicable
           codeReference: f.codeReference || '',
           specViolations: []
         }));
-        break; // success
-      } catch (attemptErr) {
-        console.log(`[AI Scan] Attempt ${attempt} error: ${attemptErr.message}`);
-        if (attempt >= 2) throw attemptErr;
-        // Wait 2s before retry
-        await new Promise(r => setTimeout(r, 2000));
+
+        scanJobs.set(jobId, { status: 'complete', snags, error: null, metadata: data.metadata });
+        return;
+      } catch (err) {
+        console.log(`[AI Scan] Job ${jobId} attempt ${attempt} error: ${err.message}`);
+        if (attempt >= 2) {
+          scanJobs.set(jobId, { status: 'error', snags: null, error: err.message });
+        } else {
+          await new Promise(r => setTimeout(r, 2000));
+        }
       }
     }
-
-    clearInterval(heartbeat);
-    res.write(`data: ${JSON.stringify({ type: 'result', success: true, snags, metadata })}\n\n`);
-    res.write('data: [DONE]\n\n');
-    res.end();
-  } catch (err) {
-    clearInterval(heartbeat);
-    console.error('[AI Scan] Failed:', err.message);
-    res.write(`data: ${JSON.stringify({ type: 'error', error: 'AI scan failed: ' + err.message })}\n\n`);
-    res.end();
-  }
+  })();
 });
 
 if (require.main === module) {
