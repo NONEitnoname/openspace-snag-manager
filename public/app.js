@@ -489,6 +489,11 @@ async function aiScanPhotos() {
         </div>`;
     }
 
+    // Analysis complete — reset button immediately
+    btn.textContent = 'AI Scan for Snags (MimaarAI)';
+    btn.disabled = false;
+    btn.classList.remove('loading');
+
     if (!data || !data.snags || data.snags.length === 0) {
       results.innerHTML = '<p style="color:var(--low);font-size:13px;font-weight:600">No defects detected. Site looks good!</p>';
       toast('AI scan complete — no defects found', 'success');
@@ -525,7 +530,6 @@ async function aiScanPhotos() {
     results.innerHTML = `<p style="color:var(--critical);font-size:13px">${esc(e.message || 'AI scan failed')}</p>`;
     toast(e.message || 'AI scan failed', 'error');
   } finally {
-    clearInterval(timer);
     btn.disabled = false;
     btn.classList.remove('loading');
     btn.textContent = 'AI Scan for Snags (MimaarAI)';
