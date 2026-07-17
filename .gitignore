@@ -2,4 +2,9 @@ node_modules/
 uploads/*
 !uploads/.gitkeep
 *.db
+.sqlite
+*.db-wal
+*.db-shm
+.data/
+data/
 .env

@@ -1,190 +1,175 @@
 const Database = require('better-sqlite3');
-const path = require('path');
 const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
 
-const dbPath = process.env.TEST_DB_PATH || path.join(__dirname, '..', 'snags.db');
+const dataDir = process.env.DATA_DIR || path.join(__dirname, '..', 'data');
+const dbPath = process.env.TEST_DB_PATH || process.env.DATABASE_PATH || path.join(dataDir, 'snag-pilot.db');
+fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+
 const db = new Database(dbPath);
-
 db.pragma('journal_mode = WAL');
 db.pragma('foreign_keys = ON');
+db.pragma('busy_timeout = 5000');
 
 db.exec(`
-  CREATE TABLE IF NOT EXISTS snags (
+  CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT (datetime('now')));
+
+  CREATE TABLE IF NOT EXISTS projects (
     id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
+  CREATE TABLE IF NOT EXISTS users (
+    id TEXT PRIMARY KEY,
+    email TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    password_hash TEXT NOT NULL,
+    role TEXT NOT NULL CHECK(role IN ('admin','inspector','reviewer')),
+    active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0,1)),
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
+  CREATE TABLE IF NOT EXISTS sessions (
+    token_hash TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    csrf_token TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
+  CREATE TABLE IF NOT EXISTS invites (
+    token_hash TEXT PRIMARY KEY,
+    email TEXT NOT NULL COLLATE NOCASE,
+    role TEXT NOT NULL CHECK(role IN ('admin','inspector','reviewer')),
+    expires_at TEXT NOT NULL,
+    used_at TEXT,
+    created_by TEXT REFERENCES users(id),
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
+  CREATE TABLE IF NOT EXISTS project_memberships (
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    role TEXT NOT NULL CHECK(role IN ('admin','inspector','reviewer')),
+    PRIMARY KEY(project_id, user_id)
+  );
+
+  CREATE TABLE IF NOT EXISTS analysis_runs (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    created_by TEXT NOT NULL REFERENCES users(id),
+    state TEXT NOT NULL CHECK(state IN ('queued','processing','completed','completed_with_errors','failed','cancelled')),
+    openspace_url TEXT,
+    context_type TEXT NOT NULL CHECK(context_type IN ('linked','unlinked')),
+    unlinked_reason TEXT,
+    consent_at TEXT NOT NULL,
+    provider TEXT NOT NULL DEFAULT 'mimarai',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
+  CREATE TABLE IF NOT EXISTS analysis_assets (
+    id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL REFERENCES analysis_runs(id) ON DELETE CASCADE,
+    original_name TEXT NOT NULL,
+    mime_type TEXT NOT NULL,
+    byte_size INTEGER NOT NULL,
+    storage_key TEXT NOT NULL UNIQUE,
+    sha256 TEXT NOT NULL,
+    state TEXT NOT NULL CHECK(state IN ('queued','processing','completed','failed','cancelled')),
+    upstream_job_id TEXT,
+    upstream_error TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
+  CREATE TABLE IF NOT EXISTS draft_findings (
+    id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL REFERENCES analysis_runs(id) ON DELETE CASCADE,
+    asset_id TEXT NOT NULL REFERENCES analysis_assets(id) ON DELETE CASCADE,
+    state TEXT NOT NULL CHECK(state IN ('needs_review','approved','rejected','handed_off')) DEFAULT 'needs_review',
+    version INTEGER NOT NULL DEFAULT 1,
     title TEXT NOT NULL,
     description TEXT NOT NULL,
     category TEXT,
-    priority TEXT DEFAULT 'Medium',
-    status TEXT DEFAULT 'Open',
+    priority TEXT CHECK(priority IN ('Critical','High','Medium','Low')),
     trade TEXT,
-    location TEXT,
-    floor TEXT,
-    zone TEXT,
-    assignee TEXT,
-    due_date TEXT,
-    root_cause TEXT,
     recommendation TEXT,
-    effort TEXT,
-    photos TEXT DEFAULT '[]',
-    created_at TEXT DEFAULT (datetime('now')),
-    updated_at TEXT DEFAULT (datetime('now'))
-  )
-`);
-
-db.exec(`
-  CREATE TABLE IF NOT EXISTS project_specs (
-    id TEXT PRIMARY KEY,
-    name TEXT NOT NULL,
-    category TEXT,
-    description TEXT NOT NULL,
-    priority TEXT,
-    source TEXT,
-    source_file TEXT,
-    created_at TEXT DEFAULT (datetime('now'))
-  )
-`);
-
-function generateId(prefix) {
-  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
-  let code = '';
-  for (let i = 0; i < 6; i++) code += chars[crypto.randomInt(chars.length)];
-  return `${prefix || 'SNG'}-${code}`;
-}
-
-function getAllSnags({ status, priority, search, sort } = {}) {
-  let sql = 'SELECT * FROM snags WHERE 1=1';
-  const params = [];
-
-  if (status) {
-    sql += ' AND status = ?';
-    params.push(status);
-  }
-  if (priority) {
-    sql += ' AND priority = ?';
-    params.push(priority);
-  }
-  if (search) {
-    sql += ' AND (title LIKE ? OR description LIKE ? OR id LIKE ? OR location LIKE ? OR assignee LIKE ?)';
-    const s = `%${search}%`;
-    params.push(s, s, s, s, s);
-  }
-
-  if (sort === 'priority') {
-    sql += ` ORDER BY CASE priority WHEN 'Critical' THEN 1 WHEN 'High' THEN 2 WHEN 'Medium' THEN 3 WHEN 'Low' THEN 4 ELSE 5 END, created_at DESC`;
-  } else {
-    sql += ' ORDER BY created_at DESC';
-  }
-
-  return db.prepare(sql).all(...params);
-}
-
-function getSnag(id) {
-  return db.prepare('SELECT * FROM snags WHERE id = ?').get(id);
-}
-
-function createSnag(data) {
-  const id = generateId();
-  const stmt = db.prepare(`
-    INSERT INTO snags (id, title, description, category, priority, status, trade, location, floor, zone, assignee, due_date, root_cause, recommendation, effort, photos)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `);
-  stmt.run(
-    id, data.title, data.description, data.category || null,
-    data.priority || 'Medium', data.status || 'Open', data.trade || null,
-    data.location || null, data.floor || null, data.zone || null,
-    data.assignee || null, data.due_date || null, data.root_cause || null,
-    data.recommendation || null, data.effort || null,
-    JSON.stringify(data.photos || [])
+    confidence REAL,
+    code_claims TEXT NOT NULL DEFAULT '[]',
+    spec_matches TEXT NOT NULL DEFAULT '[]',
+    provider_model TEXT,
+    prompt_version TEXT NOT NULL DEFAULT 'pilot-v1',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
-  return getSnag(id);
+
+  CREATE TABLE IF NOT EXISTS handoffs (
+    finding_id TEXT PRIMARY KEY REFERENCES draft_findings(id) ON DELETE CASCADE,
+    openspace_field_note_url TEXT NOT NULL,
+    payload_hash TEXT NOT NULL,
+    handed_off_by TEXT NOT NULL REFERENCES users(id),
+    handed_off_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
+  CREATE TABLE IF NOT EXISTS spec_clauses (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    description TEXT NOT NULL,
+    category TEXT,
+    priority TEXT CHECK(priority IN ('Critical','High','Medium','Low')),
+    source_name TEXT,
+    source_page TEXT,
+    revision TEXT,
+    active INTEGER NOT NULL DEFAULT 0 CHECK(active IN (0,1)),
+    created_by TEXT REFERENCES users(id),
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
+  CREATE TABLE IF NOT EXISTS audit_events (
+    id TEXT PRIMARY KEY,
+    project_id TEXT REFERENCES projects(id) ON DELETE CASCADE,
+    actor_id TEXT REFERENCES users(id),
+    entity_type TEXT NOT NULL,
+    entity_id TEXT NOT NULL,
+    action TEXT NOT NULL,
+    details TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_runs_project_created ON analysis_runs(project_id, created_at DESC);
+  CREATE INDEX IF NOT EXISTS idx_assets_run ON analysis_assets(run_id);
+  CREATE INDEX IF NOT EXISTS idx_findings_state_created ON draft_findings(state, created_at DESC);
+  CREATE INDEX IF NOT EXISTS idx_sessions_user_expiry ON sessions(user_id, expires_at);
+`);
+
+function id(prefix) {
+  return `${prefix}_${crypto.randomUUID()}`;
 }
 
-function updateSnag(id, data) {
-  const existing = getSnag(id);
-  if (!existing) return null;
-
-  const fields = ['title', 'description', 'category', 'priority', 'status', 'trade', 'location', 'floor', 'zone', 'assignee', 'due_date', 'root_cause', 'recommendation', 'effort', 'photos'];
-  const updates = [];
-  const params = [];
-
-  for (const f of fields) {
-    if (data[f] !== undefined) {
-      updates.push(`${f} = ?`);
-      params.push(f === 'photos' ? JSON.stringify(data[f]) : data[f]);
-    }
-  }
-
-  if (updates.length === 0) return existing;
-
-  updates.push("updated_at = datetime('now')");
-  params.push(id);
-
-  db.prepare(`UPDATE snags SET ${updates.join(', ')} WHERE id = ?`).run(...params);
-  return getSnag(id);
+function json(value) {
+  return JSON.stringify(value ?? []);
 }
 
-function deleteSnag(id) {
-  const existing = getSnag(id);
-  if (!existing) return false;
-  db.prepare('DELETE FROM snags WHERE id = ?').run(id);
-  return true;
+function parseJson(value, fallback = []) {
+  try { return JSON.parse(value || JSON.stringify(fallback)); } catch { return fallback; }
 }
 
-function getStats() {
-  const total = db.prepare('SELECT COUNT(*) as count FROM snags').get().count;
-  const open = db.prepare("SELECT COUNT(*) as count FROM snags WHERE status = 'Open'").get().count;
-  const inProgress = db.prepare("SELECT COUNT(*) as count FROM snags WHERE status = 'In Progress'").get().count;
-  const resolved = db.prepare("SELECT COUNT(*) as count FROM snags WHERE status IN ('Resolved', 'Closed')").get().count;
-  const critical = db.prepare("SELECT COUNT(*) as count FROM snags WHERE priority = 'Critical' AND status NOT IN ('Resolved', 'Closed')").get().count;
-  return { total, open, inProgress, resolved, critical };
+function ensurePilotProject() {
+  const existing = db.prepare('SELECT * FROM projects ORDER BY created_at LIMIT 1').get();
+  if (existing) return existing;
+  const project = { id: id('prj'), name: process.env.PILOT_PROJECT_NAME || 'OpenSpace Pilot' };
+  db.prepare('INSERT INTO projects (id, name) VALUES (?, ?)').run(project.id, project.name);
+  return db.prepare('SELECT * FROM projects WHERE id = ?').get(project.id);
 }
 
-// Project Specs
-function getAllSpecs({ category } = {}) {
-  let sql = 'SELECT * FROM project_specs WHERE 1=1';
-  const params = [];
-  if (category) { sql += ' AND (category = ? OR category IS NULL)'; params.push(category); }
-  sql += ' ORDER BY created_at DESC';
-  return db.prepare(sql).all(...params);
+function audit({ projectId = null, actorId = null, entityType, entityId, action, details = {} }) {
+  db.prepare('INSERT INTO audit_events (id, project_id, actor_id, entity_type, entity_id, action, details) VALUES (?, ?, ?, ?, ?, ?, ?)')
+    .run(id('evt'), projectId, actorId, entityType, entityId, action, JSON.stringify(details));
 }
 
-function getSpec(id) {
-  return db.prepare('SELECT * FROM project_specs WHERE id = ?').get(id);
-}
+function close() { db.close(); }
 
-function createSpec(data) {
-  const id = generateId('SPEC');
-  db.prepare('INSERT INTO project_specs (id, name, category, description, priority, source, source_file) VALUES (?, ?, ?, ?, ?, ?, ?)')
-    .run(id, data.name, data.category || null, data.description, data.priority || null, data.source || 'manual', data.source_file || null);
-  return getSpec(id);
-}
-
-function updateSpec(id, data) {
-  const existing = getSpec(id);
-  if (!existing) return null;
-  const fields = ['name', 'category', 'description', 'priority'];
-  const updates = [];
-  const params = [];
-  for (const f of fields) { if (data[f] !== undefined) { updates.push(`${f} = ?`); params.push(data[f]); } }
-  if (updates.length === 0) return existing;
-  params.push(id);
-  db.prepare(`UPDATE project_specs SET ${updates.join(', ')} WHERE id = ?`).run(...params);
-  return getSpec(id);
-}
-
-function deleteSpec(id) {
-  if (!getSpec(id)) return false;
-  db.prepare('DELETE FROM project_specs WHERE id = ?').run(id);
-  return true;
-}
-
-function getSpecsByCategory(category, limit = 10) {
-  let sql = 'SELECT * FROM project_specs WHERE 1=1';
-  const params = [];
-  if (category) { sql += ' AND (category = ? OR category IS NULL)'; params.push(category); }
-  sql += ` ORDER BY CASE priority WHEN 'Critical' THEN 1 WHEN 'High' THEN 2 WHEN 'Medium' THEN 3 WHEN 'Low' THEN 4 ELSE 5 END LIMIT ?`;
-  params.push(limit);
-  return db.prepare(sql).all(...params);
-}
-
-module.exports = { getAllSnags, getSnag, createSnag, updateSnag, deleteSnag, getStats, getAllSpecs, getSpec, createSpec, updateSpec, deleteSpec, getSpecsByCategory };
+module.exports = { db, id, json, parseJson, ensurePilotProject, audit, close, dbPath };
