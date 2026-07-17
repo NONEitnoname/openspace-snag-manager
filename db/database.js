@@ -1,4 +1,4 @@
-const Database = require('better-sqlite3');
+const { DatabaseSync } = require('node:sqlite');
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
@@ -7,10 +7,9 @@ const dataDir = process.env.DATA_DIR || path.join(__dirname, '..', 'data');
 const dbPath = process.env.TEST_DB_PATH || process.env.DATABASE_PATH || path.join(dataDir, 'snag-pilot.db');
 fs.mkdirSync(path.dirname(dbPath), { recursive: true });
 
-const db = new Database(dbPath);
-db.pragma('journal_mode = WAL');
-db.pragma('foreign_keys = ON');
-db.pragma('busy_timeout = 5000');
+const db = new DatabaseSync(dbPath, { enableForeignKeyConstraints: true });
+db.exec('PRAGMA journal_mode = WAL');
+db.exec('PRAGMA busy_timeout = 5000');
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT (datetime('now')));
@@ -80,6 +79,8 @@ db.exec(`
     state TEXT NOT NULL CHECK(state IN ('queued','processing','completed','failed','cancelled')),
     upstream_job_id TEXT,
     upstream_error TEXT,
+    progress INTEGER NOT NULL DEFAULT 0,
+    progress_message TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
@@ -128,6 +129,31 @@ db.exec(`
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
 
+  CREATE TABLE IF NOT EXISTS snags (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    human_ref TEXT NOT NULL UNIQUE,
+    title TEXT NOT NULL,
+    description TEXT NOT NULL,
+    category TEXT,
+    priority TEXT NOT NULL DEFAULT 'Medium' CHECK(priority IN ('Critical','High','Medium','Low')),
+    status TEXT NOT NULL DEFAULT 'Open' CHECK(status IN ('Open','In Progress','Resolved','Closed')),
+    trade TEXT,
+    location TEXT,
+    floor TEXT,
+    zone TEXT,
+    assignee TEXT,
+    due_date TEXT,
+    root_cause TEXT,
+    recommendation TEXT,
+    photos TEXT NOT NULL DEFAULT '[]',
+    source_finding_id TEXT REFERENCES draft_findings(id) ON DELETE SET NULL,
+    created_by TEXT NOT NULL REFERENCES users(id),
+    version INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
   CREATE TABLE IF NOT EXISTS audit_events (
     id TEXT PRIMARY KEY,
     project_id TEXT REFERENCES projects(id) ON DELETE CASCADE,
@@ -143,7 +169,13 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_assets_run ON analysis_assets(run_id);
   CREATE INDEX IF NOT EXISTS idx_findings_state_created ON draft_findings(state, created_at DESC);
   CREATE INDEX IF NOT EXISTS idx_sessions_user_expiry ON sessions(user_id, expires_at);
+  CREATE INDEX IF NOT EXISTS idx_snags_project_status ON snags(project_id, status, created_at DESC);
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_snags_source_finding ON snags(source_finding_id) WHERE source_finding_id IS NOT NULL;
 `);
+
+for (const migration of ['ALTER TABLE analysis_assets ADD COLUMN progress INTEGER NOT NULL DEFAULT 0', 'ALTER TABLE analysis_assets ADD COLUMN progress_message TEXT']) {
+  try { db.exec(migration); } catch { /* column already exists */ }
+}
 
 function id(prefix) {
   return `${prefix}_${crypto.randomUUID()}`;
@@ -170,6 +202,12 @@ function audit({ projectId = null, actorId = null, entityType, entityId, action,
     .run(id('evt'), projectId, actorId, entityType, entityId, action, JSON.stringify(details));
 }
 
+function transaction(fn) {
+  db.exec('BEGIN');
+  try { const result = fn(); db.exec('COMMIT'); return result; }
+  catch (error) { db.exec('ROLLBACK'); throw error; }
+}
+
 function close() { db.close(); }
 
-module.exports = { db, id, json, parseJson, ensurePilotProject, audit, close, dbPath };
+module.exports = { db, id, json, parseJson, ensurePilotProject, audit, transaction, close, dbPath };
