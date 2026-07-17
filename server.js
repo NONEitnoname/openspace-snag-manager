@@ -151,6 +151,9 @@ async function providerFetch(url, options, timeoutMs = 15000) {
   try { return await fetch(url, { ...options, signal: controller.signal }); }
   finally { clearTimeout(timer); }
 }
+/* Each poll is charged against the provider account's quota, so poll gently. */
+const POLL_BASE_MS = Number(process.env.PROVIDER_POLL_MS || 2000);
+const POLL_DEADLINE_MS = Number(process.env.PROVIDER_DEADLINE_MS || 5 * 60 * 1000);
 let providerToken = process.env.MIMARAI_API_TOKEN || null;
 let providerLoginPromise = null;
 async function mintProviderToken() {
@@ -230,23 +233,47 @@ async function processAsset(run, asset) {
       }, 30000);
     }
     const submitData = await submit.json().catch(() => ({}));
+    if (submit.status === 429) throw new Error(submitData.message || submitData.error || 'MimaarAI usage limit reached for this account.');
     const jobId = submitData.jobId || submitData.id || submitData.job_id;
     if (!(submit.ok || submit.status === 202) || !jobId) throw new Error(submitData.error || submitData.message || 'Provider did not return a job ID');
     db.prepare('UPDATE analysis_assets SET upstream_job_id = ?, updated_at = datetime(\'now\') WHERE id = ?').run(String(jobId), asset.id);
-    const deadline = Date.now() + 5 * 60 * 1000;
+    /* The provider keeps jobs in memory across several replicas, so a poll can land on
+       an instance that has never seen this job and answer 404. Quota is also charged per
+       poll. So: back off, tolerate transient answers, and fail only on an explicit
+       failure or the deadline. */
+    const deadline = Date.now() + POLL_DEADLINE_MS;
     let result = null;
+    let lastTransient = null;
+    let interval = POLL_BASE_MS;
     while (Date.now() < deadline) {
-      await new Promise(resolve => setTimeout(resolve, 1500));
-      const status = await providerFetch(`https://mimarai.com/api/v1/analyze/${encodeURIComponent(jobId)}`, { headers: { Authorization: `Bearer ${token}` } }, 15000);
-      const data = await status.json().catch(() => ({}));
-      if (!status.ok || data.success === false || data.status === 'failed') throw new Error(data.error || data.message || 'Provider analysis failed');
+      await new Promise(resolve => setTimeout(resolve, interval));
+      interval = Math.min(Math.round(interval * 1.35), POLL_BASE_MS * 4);
+      let status;
+      let data;
+      try {
+        status = await providerFetch(`https://mimarai.com/api/v1/analyze/${encodeURIComponent(jobId)}`, { headers: { Authorization: `Bearer ${token}` } }, 15000);
+        data = await status.json().catch(() => ({}));
+      } catch (error) { lastTransient = 'The provider did not respond while the analysis was running.'; continue; }
+
+      if (status.status === 401) {
+        providerToken = null;
+        const refreshed = await mintProviderToken();
+        if (refreshed) { token = refreshed; lastTransient = 'Re-authenticating with MimaarAI.'; continue; }
+        throw new Error('MimaarAI token expired and could not be refreshed.');
+      }
+      if (status.status === 429) { lastTransient = data.message || data.error || 'MimaarAI usage limit reached.'; interval = POLL_BASE_MS * 4; continue; }
+      if (status.status === 404 || status.status >= 500) { lastTransient = 'The provider is still working on this job.'; continue; }
+      if (data.success === false || data.status === 'failed') throw new Error(data.error || data.message || 'Provider analysis failed');
+      if (!status.ok) { lastTransient = data.message || data.error || `Provider responded ${status.status}.`; continue; }
+
+      lastTransient = null;
       if (data.message || Number.isFinite(Number(data.progress))) {
         db.prepare("UPDATE analysis_assets SET progress = ?, progress_message = ?, updated_at = datetime('now') WHERE id = ?")
           .run(Math.max(0, Math.min(100, Number(data.progress) || 0)), data.message ? String(data.message).slice(0, 300) : null, asset.id);
       }
       if (data.status === 'completed' || data.status === 'complete') { result = data; break; }
     }
-    if (!result) throw new Error('Provider analysis timed out');
+    if (!result) throw new Error(lastTransient ? `Analysis did not finish: ${lastTransient}` : 'Provider analysis timed out');
     const createFinding = db.prepare(`INSERT INTO draft_findings (id, run_id, asset_id, title, description, category, priority, trade, recommendation, confidence, code_claims, provider_model)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
     const findings = mappedFindings(result);
