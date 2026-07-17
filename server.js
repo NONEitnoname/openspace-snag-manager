@@ -8,6 +8,9 @@ const PDFDocument = require('pdfkit');
 const { db, id, json, parseJson, ensurePilotProject, audit, transaction: runInTransaction } = require('./db/database');
 
 const app = express();
+/* Identifies this process, so a deploy can be proven live rather than assumed. */
+const BOOT_ID = crypto.randomUUID();
+const STARTED_AT = new Date().toISOString();
 const PORT = Number(process.env.PORT || 3000);
 const uploadsDir = process.env.UPLOADS_DIR || path.join(process.env.DATA_DIR || path.join(__dirname, 'data'), 'uploads');
 const providerRuns = new Map();
@@ -273,9 +276,9 @@ async function processRun(runId) {
 }
 
 app.use((req, res, next) => { res.locals.requestId = crypto.randomUUID(); res.setHeader('X-Request-ID', res.locals.requestId); next(); });
-app.get('/api/health/live', (req, res) => res.json({ status: 'ok', requestId: res.locals.requestId }));
+app.get('/api/health/live', (req, res) => res.json({ status: 'ok', bootId: BOOT_ID, startedAt: STARTED_AT, requestId: res.locals.requestId }));
 app.get('/api/health/ready', (req, res) => {
-  try { db.prepare('SELECT 1').get(); fs.accessSync(uploadsDir, fs.constants.W_OK); res.json({ status: 'ready', requestId: res.locals.requestId }); }
+  try { db.prepare('SELECT 1').get(); fs.accessSync(uploadsDir, fs.constants.W_OK); res.json({ status: 'ready', bootId: BOOT_ID, requestId: res.locals.requestId }); }
   catch { sendError(res, 503, 'not_ready', 'Database or storage is unavailable.'); }
 });
 
@@ -690,5 +693,13 @@ app.use((err, req, res, next) => {
   next();
 });
 
-if (require.main === module) app.listen(PORT, () => console.log(`OpenSpace AI companion listening on ${PORT}`));
+/* A DATA_DIR that is not an absolute POSIX path in production almost always means a
+   mangled env var (Git Bash rewrites "/data" to a Windows path), which silently sends
+   the database to the container's ephemeral disk instead of the mounted volume. */
+if (process.env.NODE_ENV === 'production' && process.env.DATA_DIR && !/^\/[^\s:]*$/.test(process.env.DATA_DIR)) {
+  throw new Error(`DATA_DIR must be an absolute path with no drive letter or spaces; received "${process.env.DATA_DIR}". Data would not persist.`);
+}
+if (require.main === module) {
+  app.listen(PORT, () => console.log(`OpenSpace Snag Manager listening on ${PORT} · data ${path.resolve(process.env.DATA_DIR || path.join(__dirname, 'data'))} · boot ${BOOT_ID}`));
+}
 module.exports = app;
