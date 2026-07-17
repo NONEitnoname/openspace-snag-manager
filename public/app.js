@@ -229,13 +229,88 @@ function validateContext() {
 }
 function previewViewer() {
   try {
-    const { url } = validateContext();
-    if (!url) { toast('No OpenSpace link was supplied for this run.', true); return; }
+    const url = $('openspaceUrl').value.trim();
+    if (!url) throw new Error('Paste an OpenSpace share link to load the viewer.');
     const parsed = new URL(url);
     if (parsed.protocol !== 'https:' || !(parsed.hostname === 'openspace.ai' || parsed.hostname.endsWith('.openspace.ai'))) throw new Error('Use an HTTPS openspace.ai share link.');
-    $('openspaceViewer').src = parsed.toString(); $('viewerWrap').classList.remove('hidden');
+    $('openspaceViewer').src = parsed.toString();
+    $('openspaceViewer').classList.remove('hidden');
+    $('viewerPlaceholder').classList.add('hidden');
     $('openCapture').href = parsed.toString(); $('openCapture').classList.remove('hidden');
+    $('captureView').disabled = false;
+    $('viewerStatus').textContent = 'Capture loaded';
+    $('viewerStatus').classList.add('live');
   } catch (error) { toast(error.message, true); }
+}
+
+/* Capture the live viewer. A cross-origin OpenSpace frame cannot be read from canvas,
+   so the browser's own Screen Capture API composites it and the user grants each frame. */
+async function grabTabFrame(stream) {
+  const track = stream.getVideoTracks()[0];
+  try {
+    /* The video element — not ImageCapture, which Chromium gates behind the camera
+       permission policy this app disables. */
+    const video = document.createElement('video');
+    video.srcObject = stream; video.muted = true; video.playsInline = true;
+    await video.play();
+    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const bitmap = await createImageBitmap(video);
+    video.pause(); video.srcObject = null;
+    return { bitmap, surface: track.getSettings().displaySurface };
+  } finally { track.stop(); }
+}
+function cropToViewer(bitmap) {
+  const rect = $('viewerWrap').getBoundingClientRect();
+  const scaleX = bitmap.width / window.innerWidth;
+  const scaleY = bitmap.height / window.innerHeight;
+  const x = Math.max(0, Math.round(rect.left * scaleX));
+  const y = Math.max(0, Math.round(rect.top * scaleY));
+  const width = Math.min(bitmap.width - x, Math.round(rect.width * scaleX));
+  const height = Math.min(bitmap.height - y, Math.round(rect.height * scaleY));
+  if (width < 40 || height < 40) return null;
+  return { x, y, width, height };
+}
+async function captureViewer() {
+  if (!navigator.mediaDevices?.getDisplayMedia) { toast('This browser cannot capture the view. Screenshot the viewer and paste it with Ctrl+V.', true); return; }
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getDisplayMedia({ video: { displaySurface: 'browser' }, preferCurrentTab: true, audio: false });
+  } catch (error) {
+    toast(error.name === 'NotAllowedError' ? 'Capture cancelled.' : 'Capture is unavailable. Screenshot the viewer and paste it with Ctrl+V.', true);
+    return;
+  }
+  try {
+    const { bitmap, surface } = await grabTabFrame(stream);
+    const crop = surface === 'browser' ? cropToViewer(bitmap) : null;
+    const canvas = document.createElement('canvas');
+    canvas.width = crop ? crop.width : bitmap.width;
+    canvas.height = crop ? crop.height : bitmap.height;
+    const context = canvas.getContext('2d');
+    if (crop) context.drawImage(bitmap, crop.x, crop.y, crop.width, crop.height, 0, 0, crop.width, crop.height);
+    else context.drawImage(bitmap, 0, 0);
+    bitmap.close?.();
+    const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', 0.92));
+    if (!blob) throw new Error('The captured frame could not be encoded.');
+    stageFiles([new File([blob], `openspace-view-${new Date().toISOString().replace(/[:.]/g, '-')}.jpg`, { type: 'image/jpeg' })]);
+    if (crop) toast('Viewer captured and staged. Tick consent, then send it to MimaarAI.');
+    else toast('Captured, but not cropped to the viewer — you shared a screen or window rather than this tab. Check the thumbnail before sending.', true);
+  } catch (error) { toast(error.message || 'The view could not be captured.', true); }
+}
+function stageFiles(files) {
+  const valid = files.filter(file => ['image/jpeg', 'image/png', 'image/webp'].includes(file.type) && file.size <= 8 * 1024 * 1024);
+  if (valid.length !== files.length) toast('Only JPEG, PNG, or WebP images up to 8 MB were staged.', true);
+  if (!valid.length) return;
+  state.selectedFiles = [...state.selectedFiles, ...valid].slice(0, 5);
+  if (state.selectedFiles.length === 5 && valid.length > 5) toast('Five images is the limit for one run.');
+  renderFilePreviews();
+}
+function handlePaste(event) {
+  if (state.currentTab !== 'analyze') return;
+  const files = Array.from(event.clipboardData?.items || []).filter(item => item.type.startsWith('image/')).map(item => item.getAsFile()).filter(Boolean);
+  if (!files.length) return;
+  event.preventDefault();
+  stageFiles(files);
+  toast('Screenshot staged from the clipboard.');
 }
 function renderFilePreviews() {
   const container = $('imagePreviews'); container.replaceChildren();
@@ -250,9 +325,8 @@ function renderFilePreviews() {
 }
 function chooseFiles(event) {
   const incoming = Array.from(event.target.files || []);
-  const valid = incoming.filter(f => ['image/jpeg', 'image/png', 'image/webp'].includes(f.type) && f.size <= 8 * 1024 * 1024);
-  if (valid.length !== incoming.length) toast('Only JPEG, PNG, or WebP images up to 8 MB were staged.', true);
-  state.selectedFiles = valid.slice(0, 5); event.target.value = ''; renderFilePreviews();
+  event.target.value = '';
+  stageFiles(incoming);
 }
 async function startAnalysis() {
   message('analysisMessage');
@@ -594,6 +668,8 @@ function bindEvents() {
   $('inviteForm').addEventListener('submit', acceptInvite);
   $('logoutButton').addEventListener('click', logout);
   $('loadViewer').addEventListener('click', previewViewer);
+  $('captureView').addEventListener('click', captureViewer);
+  document.addEventListener('paste', handlePaste);
   $('analysisImages').addEventListener('change', chooseFiles);
   $('startAnalysis').addEventListener('click', startAnalysis);
   $('cancelRun').addEventListener('click', cancelRun);

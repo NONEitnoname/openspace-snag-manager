@@ -70,30 +70,49 @@
       </div>
     </section>
 
-    <section id="panel-analyze" role="tabpanel" aria-labelledby="tab-analyze" class="panel">
-      <div class="two-column">
-        <section class="card stack" aria-labelledby="analysisTitle">
-          <div><p class="eyebrow">Step 1 · Context</p><h2 id="analysisTitle">Attach the capture</h2></div>
-          <label>Exact OpenSpace share link <input id="openspaceUrl" type="url" placeholder="https://ksa.openspace.ai/ohplayer?..." autocomplete="off"></label>
-          <p class="hint">Paste the exact capture location. The companion cannot read a cross-origin viewer's current position.</p>
-          <label>If no link is available, explain why <input id="unlinkedReason" type="text" maxlength="500" placeholder="Field photo taken before the 360 capture"></label>
-          <div class="viewer-actions"><button id="loadViewer" type="button">Preview capture</button><a id="openCapture" class="quiet-link hidden" target="_blank" rel="noopener">Open in OpenSpace</a></div>
-          <div id="viewerWrap" class="viewer hidden"><iframe id="openspaceViewer" title="Attached OpenSpace capture" allow="fullscreen"></iframe></div>
+    <section id="panel-analyze" role="tabpanel" aria-labelledby="tab-analyze" class="panel wide-panel">
+      <div class="capture-bar card">
+        <label class="url-label">OpenSpace share link <input id="openspaceUrl" type="url" placeholder="https://ksa.openspace.ai/ohplayer?site=…" autocomplete="off"></label>
+        <button id="loadViewer" type="button" class="primary">Load capture</button>
+        <a id="openCapture" class="quiet-link hidden" target="_blank" rel="noopener">Open in OpenSpace ↗</a>
+        <label class="url-label">No link? Say why <input id="unlinkedReason" type="text" maxlength="500" placeholder="Field photo taken before the 360 capture"></label>
+      </div>
+
+      <div class="split">
+        <section class="viewer-panel" aria-labelledby="viewerTitle">
+          <div class="viewer-head">
+            <div><p class="eyebrow">Live 360° capture</p><h2 id="viewerTitle">Site viewer</h2></div>
+            <div class="viewer-head-actions">
+              <span id="viewerStatus" class="viewer-status">No capture loaded</span>
+              <button id="captureView" type="button" class="primary" disabled>Capture this view</button>
+            </div>
+          </div>
+          <div id="viewerWrap" class="viewer">
+            <div id="viewerPlaceholder" class="viewer-placeholder">
+              <p class="viewer-placeholder-title">Load a capture to walk the site</p>
+              <p>Paste an OpenSpace share link above. Sign in to OpenSpace in this browser first — the viewer carries your session.</p>
+            </div>
+            <iframe id="openspaceViewer" title="Live OpenSpace capture" allow="fullscreen" class="hidden"></iframe>
+          </div>
+          <p class="hint">Navigate to the defect in the viewer, then capture the view. Your browser will ask which surface to share — choose this tab, and only the viewer area is kept.</p>
         </section>
-        <section class="card stack" aria-labelledby="evidenceTitle">
-          <div><p class="eyebrow">Step 2 · Evidence</p><h2 id="evidenceTitle">Stage the images</h2></div>
-          <label class="file-picker">Select up to five JPEG, PNG, or WebP images (8&nbsp;MB each)<input id="analysisImages" type="file" accept="image/jpeg,image/png,image/webp" multiple></label>
-          <div id="imagePreviews" class="previews" aria-live="polite"></div>
-          <label class="consent"><input id="analysisConsent" type="checkbox"> I confirm these images and the selected specification context may be sent to MimaarAI for this run.</label>
-          <button id="startAnalysis" type="button" class="primary">Send to MimaarAI</button>
-          <p id="analysisMessage" class="form-message" role="status"></p>
+
+        <section class="evidence-rail" aria-labelledby="evidenceTitle">
+          <div class="card stack">
+            <div><p class="eyebrow">Evidence</p><h2 id="evidenceTitle">Stage for review</h2></div>
+            <label class="file-picker small">Capture the view, paste a screenshot (Ctrl+V), or choose files<input id="analysisImages" type="file" accept="image/jpeg,image/png,image/webp" multiple></label>
+            <div id="imagePreviews" class="previews" aria-live="polite"></div>
+            <label class="consent"><input id="analysisConsent" type="checkbox"> I confirm these images and the selected specification context may be sent to MimaarAI for this run.</label>
+            <button id="startAnalysis" type="button" class="primary">Send to MimaarAI</button>
+            <p id="analysisMessage" class="form-message" role="status"></p>
+          </div>
+          <section id="runStatus" class="card run-card hidden" aria-live="polite">
+            <div class="panel-header"><div><p class="eyebrow">Analysis run</p><h2>Pipeline</h2></div><button id="cancelRun" class="quiet">Cancel queued</button></div>
+            <div id="runItems" class="run-items"></div>
+            <p id="runSummary" class="hint"></p>
+          </section>
         </section>
       </div>
-      <section id="runStatus" class="card run-card hidden" aria-live="polite">
-        <div class="panel-header"><div><p class="eyebrow">Analysis run</p><h2>Pipeline</h2></div><button id="cancelRun" class="quiet">Cancel queued images</button></div>
-        <div id="runItems" class="run-items"></div>
-        <p id="runSummary" class="hint"></p>
-      </section>
     </section>
 
     <section id="panel-review" role="tabpanel" aria-labelledby="tab-review" class="panel">
