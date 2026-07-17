@@ -17,6 +17,7 @@ Two connected loops:
 ## Security spine (do not regress)
 - scrypt password hashing; session cookie `snag_session` (httpOnly, sameSite=lax, secure in prod); CSRF token required on every write; `APP_ORIGIN` origin check
 - Roles: `admin` / `inspector` / `reviewer`. Every route is membership-checked against the project — there are IDOR tests, keep them passing.
+- **Snags are collaborative; draft findings are not.** Any project member may edit any snag (the assignee has to progress work they did not raise), and only an admin may delete one. A draft finding is AI output attributed to the run that produced it, so `PATCH /api/findings/:id` restricts inspectors to their own. This asymmetry is deliberate — both rules are pinned by tests; do not "harmonise" them without changing the tests on purpose.
 - Uploads: magic-byte signature check (JPEG/PNG/WebP), served only through authed routes — never static `/uploads`
 - CSV export prefixes `=+-@` to defuse spreadsheet formula injection
 - CSP + `Permissions-Policy` set in `server.js`. `frame-src` allows `*.openspace.ai` only.

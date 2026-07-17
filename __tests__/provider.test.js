@@ -76,3 +76,29 @@ test('a quota rejection is reported in the provider\'s own words, not as a gener
   expect(run.state).toBe('failed');
   expect(run.assets[0].upstream_error).toContain('Daily usage limit reached');
 }, 30000);
+
+test('cancelling mid-run never uploads the withdrawn image, and the cancel is not recomputed away', async () => {
+  const submitted = [];
+  global.fetch = async (url, options) => {
+    if (String(url).endsWith('/api/v1/analyze')) {
+      submitted.push(JSON.parse(options.body).imageData);
+      await new Promise(resolve => setTimeout(resolve, 700)); // first image is slow: time to cancel
+      return json(202, { jobId: `job_${submitted.length}` });
+    }
+    return json(200, { status: 'completed', analysis: { findings: [] } });
+  };
+  const created = await request(app).post('/api/analysis-runs').set('Cookie', session.cookie).set('X-CSRF-Token', session.csrf)
+    .field('projectId', projectId).field('openspaceUrl', 'https://ksa.openspace.ai/ohplayer?site=x').field('consentAccepted', 'true')
+    .attach('images', JPEG, { filename: 'A.jpg', contentType: 'image/jpeg' })
+    .attach('images', JPEG, { filename: 'B.jpg', contentType: 'image/jpeg' })
+    .expect(202);
+
+  await new Promise(resolve => setTimeout(resolve, 200)); // A is in flight, B still queued
+  await request(app).post(`/api/analysis-runs/${created.body.runId}/cancel`).set('Cookie', session.cookie).set('X-CSRF-Token', session.csrf).expect(204);
+  await new Promise(resolve => setTimeout(resolve, 2500)); // let the in-flight image finish
+
+  const run = await request(app).get(`/api/analysis-runs/${created.body.runId}`).set('Cookie', session.cookie);
+  expect(submitted).toHaveLength(1);          // B was withdrawn and must never reach the provider
+  expect(run.body.state).toBe('cancelled');   // an asset finishing afterwards must not undo the cancel
+  expect(run.body.assets.find(a => a.original_name === 'B.jpg').state).toBe('cancelled');
+}, 30000);

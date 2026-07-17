@@ -147,6 +147,57 @@ test('only approved findings can be promoted, and promotion is idempotent', asyn
   expect(again.body.id).toBe(first.body.id);
 });
 
+test('resolution is stamped when it happens, and later edits do not re-date it', async () => {
+  const created = await createSnag();
+  expect(created.body.resolved_at).toBeNull();
+
+  const resolved = await authed(request(app).patch(`/api/snags/${created.body.id}`), admin).send({ version: created.body.version, status: 'Resolved' }).expect(200);
+  expect(resolved.body.resolved_at).toBeTruthy();
+
+  // An unrelated edit moves updated_at but must leave the resolution date alone.
+  db.prepare("UPDATE snags SET resolved_at = '2026-07-01T09:00:00.000Z' WHERE id = ?").run(created.body.id);
+  const edited = await authed(request(app).patch(`/api/snags/${created.body.id}`), admin).send({ version: resolved.body.version, assignee: 'Someone else' }).expect(200);
+  expect(edited.body.resolved_at).toBe('2026-07-01T09:00:00.000Z');
+
+  // Closing an already-resolved snag keeps the original resolution moment.
+  const closed = await authed(request(app).patch(`/api/snags/${created.body.id}`), admin).send({ version: edited.body.version, status: 'Closed' }).expect(200);
+  expect(closed.body.resolved_at).toBe('2026-07-01T09:00:00.000Z');
+
+  // Reopening clears it: an open snag has no resolution date.
+  const reopened = await authed(request(app).patch(`/api/snags/${created.body.id}`), admin).send({ version: closed.body.version, status: 'Open' }).expect(200);
+  expect(reopened.body.resolved_at).toBeNull();
+});
+
+test('the trend counts a resolution on the day it happened, not the day it was last edited', async () => {
+  const fiveDaysAgo = new Date(Date.now() - 5 * 86400000).toISOString().slice(0, 10);
+  const today = new Date().toISOString().slice(0, 10);
+  const readTrend = async () => (await request(app).get(`/api/projects/${projectId}/stats`).set('Cookie', admin.cookie).expect(200)).body.trend;
+  const before = await readTrend(); // other tests in this suite resolve snags too, so measure the delta
+
+  const created = await createSnag();
+  await authed(request(app).patch(`/api/snags/${created.body.id}`), admin).send({ version: created.body.version, status: 'Resolved' }).expect(200);
+  // Resolved five days ago, touched today: updated_at moves, resolved_at must not.
+  db.prepare("UPDATE snags SET resolved_at = datetime('now','-5 days'), updated_at = datetime('now') WHERE id = ?").run(created.body.id);
+  const after = await readTrend();
+
+  const on = (trend, day) => trend.find(d => d.day === day).resolved;
+  expect(on(after, fiveDaysAgo) - on(before, fiveDaysAgo)).toBe(1); // counted on the day it closed out
+  expect(on(after, today) - on(before, today)).toBe(0);             // not on the day it was last edited
+});
+
+test('any project member may progress a snag they did not raise (snags are collaborative)', async () => {
+  // Deliberate asymmetry with draft findings, which restrict inspectors to their own.
+  const invite = await authed(request(app).post('/api/admin/invites'), admin).send({ email: 'inspector2@example.com', role: 'inspector' }).expect(201);
+  const token = new URL(invite.body.inviteUrl).searchParams.get('invite');
+  const accepted = await request(app).post('/api/auth/accept-invite').send({ token, password: 'inspector-password-2' }).expect(201);
+  const inspector = { cookie: accepted.headers['set-cookie'][0].split(';')[0], csrf: accepted.body.csrfToken };
+
+  const created = await createSnag(); // raised by admin
+  const updated = await authed(request(app).patch(`/api/snags/${created.body.id}`), inspector)
+    .send({ version: created.body.version, status: 'In Progress' }).expect(200);
+  expect(updated.body.status).toBe('In Progress');
+});
+
 test('stats endpoint returns full shape', async () => {
   const stats = await request(app).get(`/api/projects/${projectId}/stats`).set('Cookie', admin.cookie).expect(200);
   expect(stats.body.snags.byStatus).toHaveProperty('Open');

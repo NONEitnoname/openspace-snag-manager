@@ -3,6 +3,15 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 
+/* Checked here, before the first mkdir, because everything below writes to this path.
+   A DATA_DIR that is not an absolute POSIX path in production almost always means a
+   mangled env var (Git Bash rewrites "/data" into a Windows path), which silently sends
+   the database to the container's ephemeral disk instead of the mounted volume. Refuse
+   to create anything rather than accept writes that will vanish on the next deploy. */
+if (process.env.NODE_ENV === 'production' && process.env.DATA_DIR && !/^\/[^\s:]*$/.test(process.env.DATA_DIR)) {
+  throw new Error(`DATA_DIR must be an absolute path with no drive letter or spaces; received "${process.env.DATA_DIR}". Data would not persist.`);
+}
+
 const dataDir = process.env.DATA_DIR || path.join(__dirname, '..', 'data');
 const dbPath = process.env.TEST_DB_PATH || process.env.DATABASE_PATH || path.join(dataDir, 'snag-pilot.db');
 fs.mkdirSync(path.dirname(dbPath), { recursive: true });
@@ -146,6 +155,7 @@ db.exec(`
     due_date TEXT,
     root_cause TEXT,
     recommendation TEXT,
+    resolved_at TEXT,
     photos TEXT NOT NULL DEFAULT '[]',
     source_finding_id TEXT REFERENCES draft_findings(id) ON DELETE SET NULL,
     created_by TEXT NOT NULL REFERENCES users(id),
@@ -173,9 +183,17 @@ db.exec(`
   CREATE UNIQUE INDEX IF NOT EXISTS idx_snags_source_finding ON snags(source_finding_id) WHERE source_finding_id IS NOT NULL;
 `);
 
-for (const migration of ['ALTER TABLE analysis_assets ADD COLUMN progress INTEGER NOT NULL DEFAULT 0', 'ALTER TABLE analysis_assets ADD COLUMN progress_message TEXT']) {
+for (const migration of [
+  'ALTER TABLE analysis_assets ADD COLUMN progress INTEGER NOT NULL DEFAULT 0',
+  'ALTER TABLE analysis_assets ADD COLUMN progress_message TEXT',
+  'ALTER TABLE snags ADD COLUMN resolved_at TEXT'
+]) {
   try { db.exec(migration); } catch { /* column already exists */ }
 }
+/* Snags resolved before resolved_at existed have only updated_at to go on. That is the
+   approximation this column was added to stop making, so backfill it once and never
+   infer again — a row edited after resolution carries a resolution date that is too late. */
+db.exec("UPDATE snags SET resolved_at = updated_at WHERE resolved_at IS NULL AND status IN ('Resolved','Closed')");
 
 function id(prefix) {
   return `${prefix}_${crypto.randomUUID()}`;

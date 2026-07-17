@@ -196,6 +196,9 @@ function mappedFindings(data) {
   }));
 }
 function refreshRunState(runId) {
+  /* Cancellation is a decision the user made, not a state derived from the assets:
+     an in-flight asset finishing afterwards must never recompute the run out of it. */
+  if (db.prepare('SELECT state FROM analysis_runs WHERE id = ?').get(runId)?.state === 'cancelled') return;
   const assets = db.prepare('SELECT state FROM analysis_assets WHERE run_id = ?').all(runId);
   const states = assets.map(a => a.state);
   let state = 'processing';
@@ -293,6 +296,10 @@ async function processRun(runId) {
     for (const asset of assets) {
       const state = db.prepare('SELECT state FROM analysis_runs WHERE id = ?').get(runId)?.state;
       if (state === 'cancelled') break;
+      /* The queue was captured before the first upload; re-read, because this asset may
+         have been cancelled while an earlier one was in flight. Never upload an image the
+         user has withdrawn. */
+      if (db.prepare('SELECT state FROM analysis_assets WHERE id = ?').get(asset.id)?.state !== 'queued') continue;
       await processAsset(run, asset);
       refreshRunState(runId);
     }
@@ -542,11 +549,14 @@ function snagFilters(req, projectId) {
   };
   return { where: clauses.join(' AND '), params, orderBy: sorts[req.query.sort] || sorts.created_desc };
 }
+/* Returns null having already answered 403 when the caller may not read this project;
+   hands back the authorised project so exports need not re-run the membership query. */
 function snagsForExport(req, res) {
   const projectId = String(req.query.projectId || '');
-  if (!projectForUser(req.user.id, projectId)) { sendError(res, 403, 'project_forbidden', 'You do not have access to this project.'); return null; }
+  const project = projectForUser(req.user.id, projectId);
+  if (!project) { sendError(res, 403, 'project_forbidden', 'You do not have access to this project.'); return null; }
   const { where, params, orderBy } = snagFilters(req, projectId);
-  return db.prepare(`SELECT s.* FROM snags s WHERE ${where} ORDER BY ${orderBy}`).all(...params);
+  return { project, snags: db.prepare(`SELECT s.* FROM snags s WHERE ${where} ORDER BY ${orderBy}`).all(...params) };
 }
 
 app.get('/api/snags', requireAuth, (req, res) => {
@@ -563,18 +573,20 @@ app.post('/api/snags', requireAuth, requireCsrf, (req, res) => {
   const { values, error } = collectSnagValues(req.body || {}, { requireCore: true });
   if (error) return sendError(res, 400, 'snag_invalid', error);
   const snagId = id('snag');
-  db.prepare(`INSERT INTO snags (id, project_id, human_ref, title, description, category, priority, status, trade, location, floor, zone, assignee, due_date, root_cause, recommendation, created_by)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-    .run(snagId, projectId, humanRef(), values.title, values.description, values.category || null, values.priority || 'Medium', values.status || 'Open',
+  const status = values.status || 'Open';
+  db.prepare(`INSERT INTO snags (id, project_id, human_ref, title, description, category, priority, status, trade, location, floor, zone, assignee, due_date, root_cause, recommendation, resolved_at, created_by)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(snagId, projectId, humanRef(), values.title, values.description, values.category || null, values.priority || 'Medium', status,
       values.trade || null, values.location || null, values.floor || null, values.zone || null, values.assignee || null, values.due_date || null,
-      values.root_cause || null, values.recommendation || null, req.user.id);
+      values.root_cause || null, values.recommendation || null, ['Resolved', 'Closed'].includes(status) ? now() : null, req.user.id);
   logEvent(projectId, req.user.id, 'snag', snagId, 'created');
   res.status(201).json(serializeSnag(db.prepare('SELECT * FROM snags WHERE id = ?').get(snagId)));
 });
 app.get('/api/snags/export/csv', requireAuth, (req, res) => {
-  const snags = snagsForExport(req, res);
-  if (!snags) return;
-  const headers = ['Ref', 'Title', 'Description', 'Category', 'Priority', 'Status', 'Trade', 'Location', 'Floor', 'Zone', 'Assignee', 'Due Date', 'Root Cause', 'Recommendation', 'Created', 'Updated'];
+  const authorised = snagsForExport(req, res);
+  if (!authorised) return;
+  const { snags } = authorised;
+  const headers =['Ref', 'Title', 'Description', 'Category', 'Priority', 'Status', 'Trade', 'Location', 'Floor', 'Zone', 'Assignee', 'Due Date', 'Root Cause', 'Recommendation', 'Created', 'Updated'];
   const cell = value => {
     if (value == null) return '';
     let text = String(value);
@@ -588,9 +600,9 @@ app.get('/api/snags/export/csv', requireAuth, (req, res) => {
   res.send(`﻿${lines.join('\r\n')}`);
 });
 app.get('/api/snags/export/pdf', requireAuth, (req, res) => {
-  const snags = snagsForExport(req, res);
-  if (!snags) return;
-  const project = projectForUser(req.user.id, String(req.query.projectId || ''));
+  const authorised = snagsForExport(req, res);
+  if (!authorised) return;
+  const { project, snags } = authorised;
   const doc = new PDFDocument({ size: 'A4', margin: 48, bufferPages: true });
   res.setHeader('Content-Type', 'application/pdf');
   res.setHeader('Content-Disposition', `attachment; filename="snag-report-${new Date().toISOString().slice(0, 10)}.pdf"`);
@@ -636,6 +648,13 @@ app.patch('/api/snags/:id', requireAuth, requireCsrf, (req, res) => {
   if (error) return sendError(res, 400, 'snag_invalid', error);
   if ((values.title === null) || (values.description === null)) return sendError(res, 400, 'snag_invalid', 'Title and description cannot be empty.');
   if (!Object.keys(values).length) return sendError(res, 400, 'update_empty', 'Provide at least one editable field.');
+  /* Stamp the moment the snag actually closed out, so later edits cannot re-date it.
+     Reopening clears it: a snag that goes back to Open has no resolution date. */
+  if (values.status !== undefined && values.status !== snag.status) {
+    const closedOut = ['Resolved', 'Closed'].includes(values.status);
+    if (closedOut && !snag.resolved_at) values.resolved_at = now();
+    if (!closedOut) values.resolved_at = null;
+  }
   const assignments = Object.keys(values).map(k => `${k} = ?`).join(', ');
   db.prepare(`UPDATE snags SET ${assignments}, version = version + 1, updated_at = datetime('now') WHERE id = ?`).run(...Object.values(values), snag.id);
   logEvent(snag.project_id, req.user.id, 'snag', snag.id, 'edited', { fields: Object.keys(values) });
@@ -701,8 +720,10 @@ app.get('/api/projects/:id/stats', requireAuth, (req, res) => {
   const findingsByState = { needs_review: 0, approved: 0, rejected: 0, handed_off: 0 };
   for (const row of db.prepare('SELECT f.state, COUNT(*) AS count FROM draft_findings f JOIN analysis_runs r ON r.id = f.run_id WHERE r.project_id = ? GROUP BY f.state').all(project.id)) findingsByState[row.state] = row.count;
   const runsTotal = db.prepare('SELECT COUNT(*) AS count FROM analysis_runs WHERE project_id = ?').get(project.id).count;
-  const trend = db.prepare(`SELECT date(created_at) AS day, COUNT(*) AS created FROM snags WHERE project_id = ? AND created_at >= datetime('now', '-13 days') GROUP BY day`).all(project.id);
-  const resolvedTrend = db.prepare(`SELECT date(updated_at) AS day, COUNT(*) AS resolved FROM snags WHERE project_id = ? AND status IN ('Resolved','Closed') AND updated_at >= datetime('now', '-13 days') GROUP BY day`).all(project.id);
+  /* date(), not datetime(): the buckets below are calendar days, so a rolling 13x24h
+     cutoff would truncate the oldest bucket at the current time of day. */
+  const trend = db.prepare(`SELECT date(created_at) AS day, COUNT(*) AS created FROM snags WHERE project_id = ? AND date(created_at) >= date('now', '-13 days') GROUP BY day`).all(project.id);
+  const resolvedTrend = db.prepare(`SELECT date(resolved_at) AS day, COUNT(*) AS resolved FROM snags WHERE project_id = ? AND resolved_at IS NOT NULL AND date(resolved_at) >= date('now', '-13 days') GROUP BY day`).all(project.id);
   const days = [];
   for (let i = 13; i >= 0; i -= 1) {
     const day = new Date(Date.now() - i * 86400000).toISOString().slice(0, 10);
@@ -720,12 +741,6 @@ app.use((err, req, res, next) => {
   next();
 });
 
-/* A DATA_DIR that is not an absolute POSIX path in production almost always means a
-   mangled env var (Git Bash rewrites "/data" to a Windows path), which silently sends
-   the database to the container's ephemeral disk instead of the mounted volume. */
-if (process.env.NODE_ENV === 'production' && process.env.DATA_DIR && !/^\/[^\s:]*$/.test(process.env.DATA_DIR)) {
-  throw new Error(`DATA_DIR must be an absolute path with no drive letter or spaces; received "${process.env.DATA_DIR}". Data would not persist.`);
-}
 if (require.main === module) {
   app.listen(PORT, () => console.log(`OpenSpace Snag Manager listening on ${PORT} · data ${path.resolve(process.env.DATA_DIR || path.join(__dirname, 'data'))} · boot ${BOOT_ID}`));
 }

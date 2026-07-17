@@ -136,13 +136,21 @@ function renderStatusDonut(snags) {
     const count = snags.byStatus[status];
     if (!count) continue;
     const sweep = (count / total) * 360;
-    const pad = total > count ? 2.2 : 0; /* 2px-equivalent gap between slices */
-    const a0 = (angle + pad / 2) * Math.PI / 180, a1 = (angle + sweep - pad / 2) * Math.PI / 180;
-    const large = sweep - pad > 180 ? 1 : 0;
-    const d = `M ${cx + r * Math.cos(a0)} ${cy + r * Math.sin(a0)} A ${r} ${r} 0 ${large} 1 ${cx + r * Math.cos(a1)} ${cy + r * Math.sin(a1)}`;
-    const arc = svg('path', { d, fill: 'none', stroke: STATUS_COLORS[status], 'stroke-width': stroke, 'stroke-linecap': 'butt' });
-    const title = svg('title'); title.textContent = `${status}: ${count}`; arc.appendChild(title);
-    chart.appendChild(arc);
+    let mark;
+    if (count === total) {
+      /* A 360 degree arc starts and ends on the same point, and the SVG spec drops such a
+         segment entirely. One status holding every snag is the normal opening state of a
+         project, so draw the ring as a circle rather than an arc that renders as nothing. */
+      mark = svg('circle', { cx, cy, r, fill: 'none', stroke: STATUS_COLORS[status], 'stroke-width': stroke });
+    } else {
+      const pad = 2.2; /* 2px-equivalent gap between slices */
+      const a0 = (angle + pad / 2) * Math.PI / 180, a1 = (angle + sweep - pad / 2) * Math.PI / 180;
+      const large = sweep - pad > 180 ? 1 : 0;
+      const d = `M ${cx + r * Math.cos(a0)} ${cy + r * Math.sin(a0)} A ${r} ${r} 0 ${large} 1 ${cx + r * Math.cos(a1)} ${cy + r * Math.sin(a1)}`;
+      mark = svg('path', { d, fill: 'none', stroke: STATUS_COLORS[status], 'stroke-width': stroke, 'stroke-linecap': 'butt' });
+    }
+    const title = svg('title'); title.textContent = `${status}: ${count}`; mark.appendChild(title);
+    chart.appendChild(mark);
     angle += sweep;
   }
   const value = svg('text', { x: cx, y: cy - 2, 'text-anchor': 'middle', class: 'donut-center-value' }); value.textContent = String(total);
@@ -293,16 +301,21 @@ async function captureViewer() {
     if (!blob) throw new Error('The captured frame could not be encoded.');
     stageFiles([new File([blob], `openspace-view-${new Date().toISOString().replace(/[:.]/g, '-')}.jpg`, { type: 'image/jpeg' })]);
     if (crop) toast('Viewer captured and staged. Tick consent, then send it to MimaarAI.');
-    else toast('Captured, but not cropped to the viewer — you shared a screen or window rather than this tab. Check the thumbnail before sending.', true);
+    else if (surface !== 'browser') toast('Captured the whole screen or window, not just the viewer, because that is what you chose to share. It may show more than the site — check the thumbnail before sending.', true);
+    else toast('Captured this tab, but the viewer was too small or scrolled out of view to crop to, so the whole tab is staged. Check the thumbnail before sending.', true);
   } catch (error) { toast(error.message || 'The view could not be captured.', true); }
 }
+const MAX_STAGED = 5;
 function stageFiles(files) {
   const valid = files.filter(file => ['image/jpeg', 'image/png', 'image/webp'].includes(file.type) && file.size <= 8 * 1024 * 1024);
   if (valid.length !== files.length) toast('Only JPEG, PNG, or WebP images up to 8 MB were staged.', true);
   if (!valid.length) return;
-  state.selectedFiles = [...state.selectedFiles, ...valid].slice(0, 5);
-  if (state.selectedFiles.length === 5 && valid.length > 5) toast('Five images is the limit for one run.');
+  /* Count what the cap actually drops, including images already staged — evidence must
+     never disappear from the tray without the inspector being told. */
+  const dropped = Math.max(0, state.selectedFiles.length + valid.length - MAX_STAGED);
+  state.selectedFiles = [...state.selectedFiles, ...valid].slice(0, MAX_STAGED);
   renderFilePreviews();
+  if (dropped) toast(`${dropped} image(s) were not staged — a run carries at most ${MAX_STAGED}. Send these, then start another run.`, true);
 }
 function handlePaste(event) {
   if (state.currentTab !== 'analyze') return;
@@ -312,14 +325,25 @@ function handlePaste(event) {
   stageFiles(files);
   toast('Screenshot staged from the clipboard.');
 }
+/* One object URL per File, revoked when the file leaves the tray — re-rendering the tray
+   must not mint a second URL for an image that is already showing. */
+const previewUrls = new WeakMap();
+function previewUrl(file) {
+  if (!previewUrls.has(file)) previewUrls.set(file, URL.createObjectURL(file));
+  return previewUrls.get(file);
+}
+function releasePreviewUrl(file) {
+  const url = previewUrls.get(file);
+  if (url) { URL.revokeObjectURL(url); previewUrls.delete(file); }
+}
 function renderFilePreviews() {
   const container = $('imagePreviews'); container.replaceChildren();
   state.selectedFiles.forEach((file, index) => {
     const card = el('div', 'preview');
-    const image = el('img'); image.src = URL.createObjectURL(file); image.alt = `Selected evidence: ${file.name}`;
+    const image = el('img'); image.src = previewUrl(file); image.alt = `Selected evidence: ${file.name}`;
     const text = el('span', null, `${file.name} · ${Math.ceil(file.size / 1024)} KB`);
     const remove = el('button', 'quiet', 'Remove'); remove.type = 'button';
-    remove.addEventListener('click', () => { state.selectedFiles.splice(index, 1); renderFilePreviews(); });
+    remove.addEventListener('click', () => { releasePreviewUrl(file); state.selectedFiles.splice(index, 1); renderFilePreviews(); });
     card.append(image, text, remove); container.appendChild(card);
   });
 }
