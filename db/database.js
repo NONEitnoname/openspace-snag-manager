@@ -181,6 +181,7 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_sessions_user_expiry ON sessions(user_id, expires_at);
   CREATE INDEX IF NOT EXISTS idx_snags_project_status ON snags(project_id, status, created_at DESC);
   CREATE UNIQUE INDEX IF NOT EXISTS idx_snags_source_finding ON snags(source_finding_id) WHERE source_finding_id IS NOT NULL;
+  CREATE INDEX IF NOT EXISTS idx_audit_project_created ON audit_events(project_id, created_at DESC, id DESC);
 `);
 
 function transaction(fn) {

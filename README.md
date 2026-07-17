@@ -9,7 +9,7 @@ Construction snag manager for a site-QA pilot: walk a live OpenSpace 360° captu
 - **Human review gate** — MimaarAI returns *draft findings*. Nothing becomes work until a reviewer approves it. Code references are flagged as unverified suggestions, model confidence is labelled as the model's own, and a finding the model did not rate stays "Unrated" rather than being defaulted.
 - **Snag register** — kanban board with drag-to-move status, list view, filters/search, photos, due dates, overdue flagging, CSV and PDF export.
 - **Promote to snag** — an approved finding becomes a snag in one click, carrying its evidence.
-- **Roles and audit** — admin / inspector / reviewer, invite-only accounts, and an audit log of every decision (including what the AI produced and what it failed on). The log has no reader UI yet — query `audit_events` directly.
+- **Roles and audit** — admin / inspector / reviewer, invite-only accounts, and an audit log of every decision (including what the AI produced and what it failed on), readable and filterable by an admin under the Admin tab.
 
 **Read [`docs/KNOWN_GAPS.md`](docs/KNOWN_GAPS.md) before trusting any of this in the field.** The headline loop — a real image analysed by MimaarAI into real findings — has never completed end to end, and nobody has yet signed in to OpenSpace through the viewer with a real account. That file says exactly what is proven and what is not.
 

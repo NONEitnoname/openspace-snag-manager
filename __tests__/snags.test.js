@@ -195,6 +195,42 @@ test('the audit trail records what the user changed, not what the server derived
   expect(fields).not.toContain('resolved_at'); // a stamp the server wrote, not the user
 });
 
+test('the audit trail is admin-only, project-scoped, and reports what happened', async () => {
+  const created = await createSnag();
+  await authed(request(app).patch(`/api/snags/${created.body.id}`), admin).send({ version: created.body.version, status: 'Resolved' }).expect(200);
+
+  const audit = await request(app).get(`/api/projects/${projectId}/audit`).set('Cookie', admin.cookie).expect(200);
+  expect(audit.body).toHaveProperty('total');
+  const edit = audit.body.items.find(e => e.entity_id === created.body.id && e.action === 'edited');
+  expect(edit.actor_email).toBe('admin@example.com');
+  expect(edit.details.fields).toEqual(['status']); // derived resolved_at is not credited to the user
+
+  // Only admins may read it.
+  const inviteRes = await authed(request(app).post('/api/admin/invites'), admin).send({ email: 'reader@example.com', role: 'reviewer' }).expect(201);
+  const token = new URL(inviteRes.body.inviteUrl).searchParams.get('invite');
+  const accepted = await request(app).post('/api/auth/accept-invite').send({ token, password: 'reviewer-password-9' }).expect(201);
+  const reviewer = accepted.headers['set-cookie'][0].split(';')[0];
+  await request(app).get(`/api/projects/${projectId}/audit`).set('Cookie', reviewer).expect(403);
+
+  // A member of another project cannot read this project's trail.
+  await request(app).get(`/api/projects/prj_other/audit`).set('Cookie', admin.cookie).expect(403);
+});
+
+test('audit pagination walks the whole trail without gaps or repeats', async () => {
+  const seen = new Set();
+  let cursor = null;
+  for (let page = 0; page < 20; page += 1) {
+    const query = new URLSearchParams({ limit: '5' });
+    if (cursor) { query.set('beforeAt', cursor.beforeAt); query.set('beforeId', cursor.beforeId); }
+    const res = await request(app).get(`/api/projects/${projectId}/audit?${query}`).set('Cookie', admin.cookie).expect(200);
+    for (const row of res.body.items) { expect(seen.has(row.id)).toBe(false); seen.add(row.id); }
+    if (!res.body.nextCursor) break;
+    cursor = res.body.nextCursor;
+  }
+  const total = (await request(app).get(`/api/projects/${projectId}/audit?limit=100`).set('Cookie', admin.cookie)).body.total;
+  expect(seen.size).toBe(total); // every event reached, none twice
+});
+
 test('data migrations are recorded and never re-run', async () => {
   const versions = db.prepare('SELECT version FROM schema_migrations ORDER BY version').all().map(r => r.version);
   expect(versions).toEqual([1, 2]);

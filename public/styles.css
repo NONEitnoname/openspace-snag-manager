@@ -228,6 +228,16 @@ textarea.short { min-height: 64px; }
 .photo-strip { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 8px; margin: 8px 0; }
 .photo-strip img { width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 8px; border: 1px solid var(--line); }
 
+/* ── Audit trail ──────────────────────────────────── */
+.audit-list { display: flex; flex-direction: column; }
+.audit-row { display: grid; grid-template-columns: 150px 1fr; gap: 8px 16px; padding: 10px 0; border-bottom: 1px solid #e8eeec; align-items: baseline; }
+.audit-row:last-child { border-bottom: 0; }
+.audit-when { font: 500 .76rem var(--font-mono); color: var(--muted); white-space: nowrap; }
+.audit-line { font-size: .92rem; }
+.audit-line strong { font-family: var(--font-display); }
+.audit-detail { grid-column: 2; font-size: .82rem; color: var(--muted); word-break: break-word; }
+@media (max-width: 620px) { .audit-row { grid-template-columns: 1fr; gap: 2px; } .audit-detail { grid-column: 1; } }
+
 /* ── Specs / misc ─────────────────────────────────── */
 .spec-row { padding: 12px 0; border-bottom: 1px solid var(--line); }
 .spec-row:last-child { border-bottom: 0; }

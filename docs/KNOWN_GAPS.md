@@ -35,20 +35,17 @@ replicas. This client tolerates it (see the polling loop and `__tests__/provider
 but the provider should move job state to shared storage — otherwise every client must
 carry the same workaround, and a job whose replica dies is lost silently.
 
-## 3. Nothing in the repo tests the capture path
+## 3. The capture path is only partly covered
 
-`captureViewer()` and `cropToViewer()` have **no automated coverage at all**. The test
-suite is server-side supertest only (no jsdom, no browser runner), so nothing committed
-here exercises them — do not read the suite passing as evidence they work.
+The crop geometry — `computeCropRect()`, which decides *which pixels of the frame become
+the evidence* — is now unit-tested (`__tests__/crop.test.js`): 1:1, HiDPI scaling,
+edge-clamping, negative offsets, and the too-small-to-crop fallback.
 
-They were checked by hand in a browser during development, by stubbing `getDisplayMedia`
-with a canvas stream: the crop landed on the viewer rect (869×554) with no surrounding
-page chrome. That was a live session, not a test, and it is gone. Chromium's "choose what
-to share" dialog cannot be driven from automation either, so the picker → real tab frame
-leg has only ever been reasoned about.
-
-Worth a manual pass on a real capture, and worth a browser-based test runner if this
-becomes more than a pilot.
+Still uncovered, and inherently so: the DOM/canvas/`getDisplayMedia` plumbing around it,
+and Chromium's "choose what to share" dialog, which no automation can drive. So the
+picker → real tab frame leg has been exercised by hand (stubbing `getDisplayMedia` with a
+canvas stream, crop landed on the viewer rect with no page chrome) but not by anything
+committed. Worth one manual pass on a real capture before the pilot.
 
 ## 3b. The app cannot tell whether OpenSpace actually served a capture
 
@@ -96,12 +93,14 @@ later than the day they actually closed, and the chart does not distinguish them
 genuinely stamped rows. Bounded: one-time, only rows predating the column, and nothing
 infers a resolution date ever again.
 
-## 7. The audit log has no reader
+## 7. The audit log reader is admin-only and read-only (by design)
 
-`audit_events` records every decision — including, since this pass, what the AI produced
-per asset and what it failed on. There is no route and no UI to read it back; the Admin
-tab only issues invites. For a pilot whose product is the audit trail, that is a real
-hole: today the only way to answer "why is this snag here" is `sqlite3` on the volume.
+`audit_events` is now readable in the Admin tab — `GET /api/projects/:id/audit`,
+admin-only, project-scoped, cursor-paginated, filterable by entity type. It records every
+decision including what the AI produced or failed on per asset. Two deliberate limits
+worth stating: only admins can read it (inspectors/reviewers cannot see the trail of
+their own project), and there is no export of the log itself — the snag CSV/PDF exports do
+not include audit history. Fine for a pilot; revisit if the trail needs to leave the app.
 
 ## 8. Bootstrap admin still enabled
 

@@ -150,7 +150,18 @@
     </section>
 
     <section id="panel-admin" role="tabpanel" aria-labelledby="tab-admin" class="panel">
-      <form id="inviteCreateForm" class="card stack narrow"><p class="eyebrow">Admin access</p><h2>Create invite</h2><label>Email <input id="inviteEmail" type="email" required></label><label>Role <select id="inviteRole"><option value="inspector">Inspector</option><option value="reviewer">Reviewer</option><option value="admin">Admin</option></select></label><button type="submit" class="primary">Create 24-hour invite</button><label id="inviteUrlWrap" class="hidden">Copy this one-time invite link <input id="inviteUrl" readonly></label><p id="adminMessage" class="form-message" role="status"></p></form>
+      <div class="two-column">
+        <form id="inviteCreateForm" class="card stack narrow"><p class="eyebrow">Admin access</p><h2>Create invite</h2><label>Email <input id="inviteEmail" type="email" required></label><label>Role <select id="inviteRole"><option value="inspector">Inspector</option><option value="reviewer">Reviewer</option><option value="admin">Admin</option></select></label><button type="submit" class="primary">Create 24-hour invite</button><label id="inviteUrlWrap" class="hidden">Copy this one-time invite link <input id="inviteUrl" readonly></label><p id="adminMessage" class="form-message" role="status"></p></form>
+        <section class="card stack" aria-labelledby="auditTitle">
+          <div class="panel-header">
+            <div><p class="eyebrow">System of record</p><h2 id="auditTitle">Audit trail</h2></div>
+            <label>Filter <select id="auditFilter"><option value="">All events</option><option value="snag">Snags</option><option value="finding">Findings</option><option value="analysis_run">Analysis runs</option><option value="analysis_asset">AI analysis</option><option value="session">Sessions</option><option value="invite">Invites</option><option value="spec_clause">Specifications</option></select></label>
+          </div>
+          <p class="hint">Every decision, in order. This is what answers "why is this snag here" — who did what, when, and what the AI produced or failed on.</p>
+          <div id="auditList" class="audit-list" aria-live="polite"></div>
+          <button id="auditMore" type="button" class="quiet hidden">Load older</button>
+        </section>
+      </div>
     </section>
   </div>
 

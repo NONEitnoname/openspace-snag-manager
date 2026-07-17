@@ -807,6 +807,31 @@ app.get('/api/projects/:id/stats', requireAuth, (req, res) => {
   });
 });
 
+/* The audit trail is the point of the product, so it needs a way to be read back.
+   Admin-only, project-scoped. Paginated on the compound (created_at, id) cursor rather
+   than an offset: ids are random UUIDs and created_at has only second resolution, so
+   neither orders rows alone, and an offset would drift as new events arrive mid-read. */
+app.get('/api/projects/:id/audit', requireAuth, requireRole('admin'), (req, res) => {
+  const project = projectForUser(req.user.id, req.params.id);
+  if (!project) return sendError(res, 403, 'project_forbidden', 'You do not have access to this project.');
+  const limit = Math.min(Math.max(Number(req.query.limit) || 50, 1), 100);
+  const entityType = typeof req.query.entityType === 'string' && /^[a-z_]{1,40}$/.test(req.query.entityType) ? req.query.entityType : null;
+  const clauses = ['e.project_id = ?'];
+  const params = [project.id];
+  if (entityType) { clauses.push('e.entity_type = ?'); params.push(entityType); }
+  if (typeof req.query.beforeAt === 'string' && req.query.beforeAt && typeof req.query.beforeId === 'string' && req.query.beforeId) {
+    clauses.push('(e.created_at < ? OR (e.created_at = ? AND e.id < ?))');
+    params.push(req.query.beforeAt, req.query.beforeAt, req.query.beforeId);
+  }
+  const rows = db.prepare(`SELECT e.id, e.entity_type, e.entity_id, e.action, e.details, e.created_at, u.email AS actor_email, u.role AS actor_role
+    FROM audit_events e LEFT JOIN users u ON u.id = e.actor_id
+    WHERE ${clauses.join(' AND ')} ORDER BY e.created_at DESC, e.id DESC LIMIT ?`).all(...params, limit + 1);
+  const page = rows.slice(0, limit).map(row => ({ ...row, details: safeJson(row.details, {}) }));
+  const total = db.prepare('SELECT COUNT(*) AS count FROM audit_events WHERE project_id = ?').get(project.id).count;
+  const last = page[page.length - 1];
+  res.json({ items: page, total, nextCursor: rows.length > limit && last ? { beforeAt: last.created_at, beforeId: last.id } : null });
+});
+
 app.use((err, req, res, next) => {
   if (err instanceof multer.MulterError) return sendError(res, err.code === 'LIMIT_FILE_SIZE' ? 413 : 400, 'upload_invalid', err.message);
   if (err) return sendError(res, 500, 'internal_error', 'An unexpected error occurred.');

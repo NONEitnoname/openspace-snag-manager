@@ -1,4 +1,4 @@
-const state = { user: null, csrf: null, projects: [], selectedFiles: [], activeRun: null, poller: null, snags: [], snagsTotal: 0, snagView: 'board', drawerSnag: null, currentTab: 'dashboard', viewerReady: false, linkedViewerUrl: null, viewerLoadIsOurs: false };
+const state = { user: null, csrf: null, projects: [], selectedFiles: [], activeRun: null, poller: null, snags: [], snagsTotal: 0, snagView: 'board', drawerSnag: null, currentTab: 'dashboard', viewerReady: false, linkedViewerUrl: null, viewerLoadIsOurs: false, auditCursor: null };
 const $ = id => document.getElementById(id);
 const SNAG_STATUSES = ['Open', 'In Progress', 'Resolved', 'Closed'];
 const STATUS_COLORS = { Open: '#7ec4bc', 'In Progress': '#3d9c92', Resolved: '#167a70', Closed: '#0b4f49' };
@@ -84,6 +84,7 @@ function switchTab(name) {
   if (name === 'review') loadFindings();
   if (name === 'snags') loadSnags();
   if (name === 'specs') loadSpecs();
+  if (name === 'admin') loadAudit(true);
 }
 async function refreshReviewBadge() {
   try {
@@ -336,16 +337,26 @@ async function grabTabFrame(stream) {
     return { bitmap, surface: track.getSettings().displaySurface };
   } finally { track.stop(); }
 }
-function cropToViewer(bitmap) {
-  const rect = $('viewerWrap').getBoundingClientRect();
-  const scaleX = bitmap.width / window.innerWidth;
-  const scaleY = bitmap.height / window.innerHeight;
+/* Pure geometry, split out so it can be tested without a browser (the DOM/canvas parts
+   around it cannot). Maps the viewer's on-screen rect into the captured frame's pixels,
+   clamps to the frame, and rejects a crop too small to be a real capture. */
+function computeCropRect(rect, viewport, frame) {
+  const scaleX = frame.width / viewport.width;
+  const scaleY = frame.height / viewport.height;
   const x = Math.max(0, Math.round(rect.left * scaleX));
   const y = Math.max(0, Math.round(rect.top * scaleY));
-  const width = Math.min(bitmap.width - x, Math.round(rect.width * scaleX));
-  const height = Math.min(bitmap.height - y, Math.round(rect.height * scaleY));
+  const width = Math.min(frame.width - x, Math.round(rect.width * scaleX));
+  const height = Math.min(frame.height - y, Math.round(rect.height * scaleY));
   if (width < 40 || height < 40) return null;
   return { x, y, width, height };
+}
+if (typeof module !== 'undefined' && module.exports) module.exports = { computeCropRect };
+function cropToViewer(bitmap) {
+  return computeCropRect(
+    $('viewerWrap').getBoundingClientRect(),
+    { width: window.innerWidth, height: window.innerHeight },
+    { width: bitmap.width, height: bitmap.height }
+  );
 }
 async function captureViewer() {
   if (!navigator.mediaDevices?.getDisplayMedia) { toast('This browser cannot capture the view. Screenshot the viewer and paste it with Ctrl+V.', true); return; }
@@ -802,6 +813,60 @@ async function createInvite(event) {
   } catch (error) { message('adminMessage', error.message, true); }
 }
 
+/* ── Audit trail ─────────────────────────────────── */
+const AUDIT_VERBS = {
+  created: 'created', edited: 'edited', deleted: 'deleted', photos_added: 'added photos to',
+  promoted_from_finding: 'promoted an AI finding into', approved: 'approved', rejected: 'rejected',
+  handed_off: 'handed off', cancelled: 'cancelled', analysed: 'AI-analysed', analysis_failed: 'AI analysis failed on',
+  login: 'signed in', logout: 'signed out', bootstrap_admin: 'bootstrapped admin', invite_accepted: 'accepted an invite'
+};
+const AUDIT_ENTITY_LABELS = { snag: 'snag', finding: 'finding', analysis_run: 'run', analysis_asset: 'image', session: 'session', invite: 'invite', spec_clause: 'clause', user: 'user' };
+function auditDetail(row) {
+  const d = row.details || {};
+  const bits = [];
+  if (d.findings != null) bits.push(`${d.findings} finding(s)`);
+  if (d.specClausesSent != null) bits.push(`${d.specClausesSent} spec clause(s) sent`);
+  if (d.model) bits.push(d.model);
+  if (d.error) bits.push(`error: ${d.error}`);
+  if (d.fields) bits.push(`fields: ${d.fields.join(', ')}`);
+  if (d.note) bits.push(`note: ${d.note}`);
+  if (d.humanRef) bits.push(d.humanRef);
+  if (d.role) bits.push(`role: ${d.role}`);
+  if (d.count != null) bits.push(`${d.count} item(s)`);
+  return bits.join(' · ');
+}
+function auditRow(row) {
+  const item = el('article', 'audit-row');
+  const when = el('time', 'audit-when', new Date(`${String(row.created_at).replace(' ', 'T')}Z`).toLocaleString());
+  const line = el('p', 'audit-line');
+  const actor = el('strong', null, row.actor_email ? row.actor_email.split('@')[0] : 'system');
+  const verb = AUDIT_VERBS[row.action] || row.action.replace(/_/g, ' ');
+  const entity = AUDIT_ENTITY_LABELS[row.entity_type] || row.entity_type;
+  line.append(actor, document.createTextNode(` ${verb} ${entity}`));
+  item.append(when, line);
+  const detail = auditDetail(row);
+  if (detail) item.append(el('p', 'audit-detail', detail));
+  return item;
+}
+async function loadAudit(reset) {
+  const list = $('auditList');
+  if (reset) { list.replaceChildren(); state.auditCursor = null; }
+  try {
+    const query = new URLSearchParams({ limit: '50' });
+    if ($('auditFilter').value) query.set('entityType', $('auditFilter').value);
+    if (!reset && state.auditCursor) { query.set('beforeAt', state.auditCursor.beforeAt); query.set('beforeId', state.auditCursor.beforeId); }
+    const data = await api(`/api/projects/${encodeURIComponent(currentProject())}/audit?${query}`);
+    if (reset && !data.items.length) {
+      const empty = el('p', 'empty');
+      empty.append(el('strong', null, 'No events yet.'), document.createTextNode('Actions across the pilot appear here as they happen.'));
+      list.appendChild(empty);
+    }
+    data.items.forEach(row => list.appendChild(auditRow(row)));
+    state.auditCursor = data.nextCursor;
+    $('auditMore').classList.toggle('hidden', !data.nextCursor);
+  } catch (error) { toast(error.message, true); }
+}
+
 /* ── Wiring ──────────────────────────────────────── */
 function bindEvents() {
   $('loginForm').addEventListener('submit', login);
@@ -820,6 +885,8 @@ function bindEvents() {
   $('findingState').addEventListener('change', loadFindings);
   $('specForm').addEventListener('submit', saveSpec);
   $('inviteCreateForm').addEventListener('submit', createInvite);
+  $('auditFilter').addEventListener('change', () => loadAudit(true));
+  $('auditMore').addEventListener('click', () => loadAudit(false));
   $('snagForm').addEventListener('submit', saveSnag);
   $('drawerClose').addEventListener('click', closeDrawer);
   $('drawerScrim').addEventListener('click', closeDrawer);
@@ -850,4 +917,6 @@ function setSnagView(view) {
   $('viewList').setAttribute('aria-pressed', String(view === 'list'));
   renderSnags();
 }
-document.addEventListener('DOMContentLoaded', () => { bindEvents(); hydrateSession(); });
+/* Guarded so the module can be required in a plain-node test to reach the pure helpers;
+   in the browser `document` exists and this wires everything up as before. */
+if (typeof document !== 'undefined') document.addEventListener('DOMContentLoaded', () => { bindEvents(); hydrateSession(); });
