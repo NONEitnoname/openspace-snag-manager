@@ -83,18 +83,16 @@
           <div class="viewer-head">
             <div><p class="eyebrow">Live 360° capture</p><h2 id="viewerTitle">Site viewer</h2></div>
             <div class="viewer-head-actions">
-              <span id="viewerStatus" class="viewer-status">No capture loaded</span>
+              <span id="viewerStatus" class="viewer-status">Opening OpenSpace…</span>
+              <button id="viewerHome" type="button">OpenSpace home</button>
               <button id="captureView" type="button" class="primary" disabled>Capture this view</button>
             </div>
           </div>
           <div id="viewerWrap" class="viewer">
-            <div id="viewerPlaceholder" class="viewer-placeholder">
-              <p class="viewer-placeholder-title">Load a capture to walk the site</p>
-              <p>Paste an OpenSpace share link above. Sign in to OpenSpace in this browser first — the viewer carries your session.</p>
-            </div>
-            <iframe id="openspaceViewer" title="Live OpenSpace capture" allow="fullscreen" class="hidden"></iframe>
+            <iframe id="openspaceViewer" title="OpenSpace" allow="fullscreen"></iframe>
           </div>
-          <p class="hint">Navigate to the defect in the viewer, then capture the view. Your browser will ask which surface to share — choose this tab, and only the viewer area is kept.</p>
+          <p class="hint">Sign in above, open the capture you want, then paste its share link to load it here. Capturing asks which surface to share — choose this tab, and only the viewer area is kept.</p>
+          <p class="hint">Single sign-on (Procore, Autodesk) may refuse to run inside a frame. If it does, <a id="openHome" target="_blank" rel="noopener">open OpenSpace in a new tab ↗</a>, sign in there, then reload this page.</p>
         </section>
 
         <section class="evidence-rail" aria-labelledby="evidenceTitle">

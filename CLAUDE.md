@@ -23,7 +23,9 @@ Two connected loops:
 - CSP + `Permissions-Policy` set in `server.js`. `frame-src` allows `*.openspace.ai` only.
 
 ## OpenSpace integration
-**OpenSpace sends no X-Frame-Options — direct iframe embed works. Never proxy it** (auth cookies ride on every resource; its JS bundle hardcodes API URLs, so a proxy cannot work). The user must be signed into OpenSpace in the same browser; otherwise the iframe shows OpenSpace's login page.
+**OpenSpace sends no X-Frame-Options — direct iframe embed works. Never proxy it** (auth cookies ride on every resource; its JS bundle hardcodes API URLs, so a proxy cannot work).
+
+The viewer defaults to `https://<region>.openspace.ai/`, which redirects to OpenSpace's login when signed out and to the user's orgs when signed in — so people sign in without leaving the app. Its `SESSION` cookie is `SameSite=None; Secure`, i.e. built for cross-site framing. Region is remembered from the last capture's origin (`localStorage.openspace_origin`, default `ksa`), and the last capture URL is restored on load (`localStorage.openspace_url`). SSO providers will likely refuse to frame — that is what the new-tab link is for. See `docs/KNOWN_GAPS.md` for what is unverified here.
 
 ### Capturing the live view
 A cross-origin iframe cannot be read from canvas, so capture goes through the **Screen Capture API**:

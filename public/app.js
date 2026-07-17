@@ -1,4 +1,4 @@
-const state = { user: null, csrf: null, projects: [], selectedFiles: [], activeRun: null, poller: null, snags: [], snagView: 'board', drawerSnag: null, currentTab: 'dashboard' };
+const state = { user: null, csrf: null, projects: [], selectedFiles: [], activeRun: null, poller: null, snags: [], snagView: 'board', drawerSnag: null, currentTab: 'dashboard', viewerReady: false };
 const $ = id => document.getElementById(id);
 const SNAG_STATUSES = ['Open', 'In Progress', 'Resolved', 'Closed'];
 const STATUS_COLORS = { Open: '#7ec4bc', 'In Progress': '#3d9c92', Resolved: '#167a70', Closed: '#0b4f49' };
@@ -79,6 +79,7 @@ function switchTab(name) {
     if (active) $('tbSheet').textContent = tab.dataset.sheet || 'SM-01';
   });
   document.querySelectorAll('[role="tabpanel"]').forEach(panel => panel.classList.toggle('active', panel.id === `panel-${name}`));
+  if (name === 'analyze') initViewer();
   if (name === 'dashboard') loadDashboard();
   if (name === 'review') loadFindings();
   if (name === 'snags') loadSnags();
@@ -230,25 +231,61 @@ function renderTrend(days) {
 }
 
 /* ── Capture & analyze ───────────────────────────── */
+/* OpenSpace is regional. Default to KSA for this pilot, but once someone loads a capture
+   remember its origin, so their sign-in lands on the region they actually work in. */
+const OPENSPACE_DEFAULT_ORIGIN = 'https://ksa.openspace.ai';
+function readStored(key) { try { return localStorage.getItem(key); } catch { return null; } }
+function writeStored(key, value) { try { localStorage.setItem(key, value); } catch { /* private mode */ } }
+function openspaceOrigin() {
+  const saved = readStored('openspace_origin');
+  return saved && /^https:\/\/([a-z0-9-]+\.)*openspace\.ai$/.test(saved) ? saved : OPENSPACE_DEFAULT_ORIGIN;
+}
+function parseOpenspaceUrl(value) {
+  const parsed = new URL(value);
+  if (parsed.protocol !== 'https:' || !(parsed.hostname === 'openspace.ai' || parsed.hostname.endsWith('.openspace.ai'))) {
+    throw new Error('Use an HTTPS openspace.ai share link.');
+  }
+  return parsed;
+}
+/* Signed out, OpenSpace redirects this to its login page; signed in, to the user's orgs.
+   Either way it is the right place to land, and the session it establishes is the one the
+   capture iframe below will use. */
+function loadOpenspaceHome() {
+  $('openspaceViewer').src = `${openspaceOrigin()}/`;
+  $('viewerStatus').textContent = 'Sign in to OpenSpace';
+  $('viewerStatus').classList.remove('live');
+  $('captureView').disabled = true;
+}
+function initViewer() {
+  if (state.viewerReady) return;
+  state.viewerReady = true;
+  $('openHome').href = `${openspaceOrigin()}/`;
+  const saved = readStored('openspace_url');
+  if (saved) { $('openspaceUrl').value = saved; previewViewer({ silent: true }); }
+  else loadOpenspaceHome();
+}
 function validateContext() {
   const url = $('openspaceUrl').value.trim(); const reason = $('unlinkedReason').value.trim();
   if (!url && !reason) throw new Error('Attach an OpenSpace link or explain why the photos are unlinked.');
   return { url, reason };
 }
-function previewViewer() {
+function previewViewer({ silent = false } = {}) {
   try {
     const url = $('openspaceUrl').value.trim();
     if (!url) throw new Error('Paste an OpenSpace share link to load the viewer.');
-    const parsed = new URL(url);
-    if (parsed.protocol !== 'https:' || !(parsed.hostname === 'openspace.ai' || parsed.hostname.endsWith('.openspace.ai'))) throw new Error('Use an HTTPS openspace.ai share link.');
+    const parsed = parseOpenspaceUrl(url);
     $('openspaceViewer').src = parsed.toString();
-    $('openspaceViewer').classList.remove('hidden');
-    $('viewerPlaceholder').classList.add('hidden');
     $('openCapture').href = parsed.toString(); $('openCapture').classList.remove('hidden');
     $('captureView').disabled = false;
     $('viewerStatus').textContent = 'Capture loaded';
     $('viewerStatus').classList.add('live');
-  } catch (error) { toast(error.message, true); }
+    writeStored('openspace_url', parsed.toString());
+    writeStored('openspace_origin', parsed.origin);
+    $('openHome').href = `${parsed.origin}/`;
+  } catch (error) {
+    if (silent) { loadOpenspaceHome(); return; } /* a stored link that no longer parses */
+    toast(error.message, true);
+  }
 }
 
 /* Capture the live viewer. A cross-origin OpenSpace frame cannot be read from canvas,
@@ -691,7 +728,8 @@ function bindEvents() {
   $('loginForm').addEventListener('submit', login);
   $('inviteForm').addEventListener('submit', acceptInvite);
   $('logoutButton').addEventListener('click', logout);
-  $('loadViewer').addEventListener('click', previewViewer);
+  $('loadViewer').addEventListener('click', () => previewViewer());
+  $('viewerHome').addEventListener('click', loadOpenspaceHome);
   $('captureView').addEventListener('click', captureViewer);
   document.addEventListener('paste', handlePaste);
   $('analysisImages').addEventListener('change', chooseFiles);

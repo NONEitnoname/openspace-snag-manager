@@ -43,14 +43,32 @@ What automation cannot drive is Chromium's "choose what to share" dialog, so the
 picker → real tab frame leg has only been reasoned about, not executed. Worth one
 manual pass on a real OpenSpace capture.
 
-## 4. OpenSpace is embedded, never written to
+## 4. Signing in to OpenSpace inside the frame is unverified with a real account
+
+The viewer defaults to `https://<region>.openspace.ai/`, which OpenSpace redirects to its
+login page when signed out. Verified: the page returns 200 with no `X-Frame-Options` and
+no `frame-ancestors`, its `SESSION` cookie is `SameSite=None; Secure` (i.e. intended for
+cross-site embedding), and the login screen renders inside the app's iframe.
+
+Not verified — nobody here has an OpenSpace account:
+
+- whether a **login actually completes** in the frame and the resulting session loads a capture;
+- **SSO** (Procore, Autodesk) almost certainly will not work framed, since identity providers
+  typically send `X-Frame-Options: DENY`. The UI says so and offers a new-tab escape hatch;
+- under **third-party storage partitioning** (Safari today, Chrome depending on settings), a
+  session established in a *separate tab* may not be visible to the iframe. Signing in
+  *inside* the viewer is the path most likely to work everywhere.
+
+One pass with a real account is the thing to do before the pilot starts.
+
+## 5. OpenSpace is embedded, never written to
 
 Handoff records a Field Note URL that a human pastes after creating the note in
 OpenSpace by hand. There is no OpenSpace API integration, and `payload_hash` records
 what *would* have been sent. OpenSpace remains the system of record; this app never
 claims to have created anything there.
 
-## 5. Bootstrap admin still enabled
+## 6. Bootstrap admin still enabled
 
 `BOOTSTRAP_ADMIN_EMAIL` / `BOOTSTRAP_ADMIN_PASSWORD` are still set on Railway.
 They are a no-op while a user exists, but should be removed from the service
