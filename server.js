@@ -16,7 +16,7 @@ fs.mkdirSync(uploadsDir, { recursive: true });
 
 app.disable('x-powered-by');
 app.use((req, res, next) => {
-  res.setHeader('Content-Security-Policy', "default-src 'self'; img-src 'self' blob:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-src https://*.openspace.ai https://openspace.ai; base-uri 'self'; form-action 'self'");
+  res.setHeader('Content-Security-Policy', "default-src 'self'; img-src 'self' blob:; style-src 'self' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; script-src 'self'; connect-src 'self'; frame-src https://*.openspace.ai https://openspace.ai; base-uri 'self'; form-action 'self'");
   res.setHeader('Referrer-Policy', 'no-referrer');
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'SAMEORIGIN');

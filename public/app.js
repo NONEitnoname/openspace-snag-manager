@@ -1,10 +1,14 @@
-const state = { user: null, csrf: null, projects: [], selectedFiles: [], activeRun: null, poller: null };
+const state = { user: null, csrf: null, projects: [], selectedFiles: [], activeRun: null, poller: null, snags: [], snagView: 'board', drawerSnag: null, currentTab: 'dashboard' };
 const $ = id => document.getElementById(id);
+const SNAG_STATUSES = ['Open', 'In Progress', 'Resolved', 'Closed'];
+const STATUS_COLORS = { Open: '#7ec4bc', 'In Progress': '#3d9c92', Resolved: '#167a70', Closed: '#0b4f49' };
+const PRIORITY_COLORS = { Critical: '#b42318', High: '#b54708', Medium: '#8a6a00', Low: '#067647' };
+const FINDING_STATE_LABELS = { needs_review: 'Needs review', approved: 'Approved', rejected: 'Rejected', handed_off: 'Handed off' };
+const FINDING_STATE_COLORS = { needs_review: '#8a6a00', approved: '#067647', rejected: '#b42318', handed_off: '#1d4ed8' };
 
 function message(id, text = '', error = false) { const el = $(id); el.textContent = text; el.classList.toggle('error', error); }
 function toast(text, error = false) { const el = $('toast'); el.textContent = text; el.classList.toggle('error', error); el.classList.add('show'); window.clearTimeout(toast.timer); toast.timer = window.setTimeout(() => el.classList.remove('show'), 3500); }
-function escapeText(value) { return String(value ?? ''); }
-function currentProject() { return $('projectSelect')?.value || state.projects[0]?.id; }
+function currentProject() { return state.projects[0]?.id; }
 function apiHeaders(extra = {}) { return { ...extra, ...(state.csrf ? { 'X-CSRF-Token': state.csrf } : {}) }; }
 async function api(path, options = {}) {
   const response = await fetch(path, { credentials: 'same-origin', ...options, headers: apiHeaders(options.headers) });
@@ -13,13 +17,35 @@ async function api(path, options = {}) {
   if (!response.ok) throw new Error(data.error?.message || 'Request failed');
   return data;
 }
-function showApp() { $('authView').classList.add('hidden'); $('appView').classList.remove('hidden'); $('userLabel').textContent = `${state.user.email} · ${state.user.role}`; setupProjects(); switchTab('analyze'); }
-function setupProjects() { $('projectSelect').replaceChildren(...state.projects.map(p => { const option = document.createElement('option'); option.value = p.id; option.textContent = p.name; return option; })); }
-function switchTab(name) {
-  document.querySelectorAll('[role="tab"]').forEach(tab => { const active = tab.dataset.tab === name; tab.setAttribute('aria-selected', String(active)); tab.tabIndex = active ? 0 : -1; });
-  document.querySelectorAll('[role="tabpanel"]').forEach(panel => panel.classList.toggle('active', panel.id === `panel-${name}`));
-  if (name === 'review') loadFindings();
-  if (name === 'specs') loadSpecs();
+function el(tag, className, text) {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (text !== undefined) node.textContent = text;
+  return node;
+}
+function svg(tag, attrs = {}) {
+  const node = document.createElementNS('http://www.w3.org/2000/svg', tag);
+  for (const [key, value] of Object.entries(attrs)) node.setAttribute(key, value);
+  return node;
+}
+function isOverdue(snag) { return snag.due_date && snag.due_date < new Date().toISOString().slice(0, 10) && ['Open', 'In Progress'].includes(snag.status); }
+function isReviewer() { return ['reviewer', 'admin'].includes(state.user.role); }
+
+/* ── Session ─────────────────────────────────────── */
+function showApp() {
+  $('authView').classList.add('hidden'); $('appView').classList.remove('hidden');
+  $('tbProject').textContent = state.projects[0]?.name || '—';
+  $('tbDate').textContent = new Date().toISOString().slice(0, 10);
+  $('tbUser').textContent = `${state.user.email.split('@')[0]} · ${state.user.role}`;
+  document.querySelectorAll('.admin-only').forEach(node => node.classList.toggle('hidden', state.user.role !== 'admin'));
+  switchTab('dashboard');
+  refreshReviewBadge();
+}
+function showAuth() {
+  const token = new URLSearchParams(location.search).get('invite');
+  $('loginForm').classList.toggle('hidden', Boolean(token));
+  $('inviteForm').classList.toggle('hidden', !token);
+  if (token) $('inviteForm').dataset.token = token;
 }
 async function hydrateSession() {
   try {
@@ -27,11 +53,6 @@ async function hydrateSession() {
     state.user = data.user; state.csrf = data.csrfToken; state.projects = data.projects;
     showApp();
   } catch { showAuth(); }
-}
-function showAuth() {
-  const token = new URLSearchParams(location.search).get('invite');
-  $('loginForm').classList.toggle('hidden', Boolean(token)); $('inviteForm').classList.toggle('hidden', !token);
-  if (token) $('inviteForm').dataset.token = token;
 }
 async function login(event) {
   event.preventDefault(); message('authMessage');
@@ -44,10 +65,163 @@ async function acceptInvite(event) {
   event.preventDefault(); message('authMessage');
   try {
     const data = await api('/api/auth/accept-invite', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token: event.currentTarget.dataset.token, password: $('invitePassword').value }) });
-    history.replaceState({}, '', location.pathname); state.user = data.user; state.csrf = data.csrfToken; state.projects = (await api('/api/auth/me')).projects; showApp();
+    history.replaceState({}, '', location.pathname); state.user = data.user; state.csrf = data.csrf ?? data.csrfToken; state.projects = (await api('/api/auth/me')).projects; showApp();
   } catch (error) { message('authMessage', error.message, true); }
 }
 async function logout() { try { await api('/api/auth/logout', { method: 'POST' }); } finally { location.reload(); } }
+
+/* ── Tabs ────────────────────────────────────────── */
+function switchTab(name) {
+  state.currentTab = name;
+  document.querySelectorAll('[role="tab"]').forEach(tab => {
+    const active = tab.dataset.tab === name;
+    tab.setAttribute('aria-selected', String(active)); tab.tabIndex = active ? 0 : -1;
+    if (active) $('tbSheet').textContent = tab.dataset.sheet || 'SM-01';
+  });
+  document.querySelectorAll('[role="tabpanel"]').forEach(panel => panel.classList.toggle('active', panel.id === `panel-${name}`));
+  if (name === 'dashboard') loadDashboard();
+  if (name === 'review') loadFindings();
+  if (name === 'snags') loadSnags();
+  if (name === 'specs') loadSpecs();
+}
+async function refreshReviewBadge() {
+  try {
+    const stats = await api(`/api/projects/${encodeURIComponent(currentProject())}/stats`);
+    const pending = stats.findings.needs_review || 0;
+    $('reviewCount').textContent = String(pending);
+    $('reviewCount').classList.toggle('hidden', !pending);
+    return stats;
+  } catch { return null; }
+}
+
+/* ── Dashboard ───────────────────────────────────── */
+async function loadDashboard() {
+  const stats = await refreshReviewBadge();
+  if (!stats) { toast('Could not load project statistics.', true); return; }
+  renderKpis(stats);
+  renderStatusDonut(stats.snags);
+  renderPriorityBars(stats.snags.byPriority);
+  renderTrend(stats.trend);
+  renderTradeBars(stats.snags.byTrade);
+  renderFindingsBar(stats.findings, stats.runsTotal);
+}
+function kpi(label, value, alert = false) {
+  const card = el('div', `kpi${alert ? ' alert' : ''}`);
+  card.append(el('div', 'kpi-value', String(value)), el('div', 'kpi-label', label));
+  return card;
+}
+function renderKpis(stats) {
+  const row = $('kpiRow'); row.replaceChildren();
+  row.append(
+    kpi('Open snags', stats.snags.byStatus.Open),
+    kpi('In progress', stats.snags.byStatus['In Progress']),
+    kpi('Overdue', stats.snags.overdue, stats.snags.overdue > 0),
+    kpi('Awaiting review', stats.findings.needs_review, stats.findings.needs_review > 0),
+    kpi('Resolved + closed', stats.snags.byStatus.Resolved + stats.snags.byStatus.Closed)
+  );
+}
+function emptyChart(container, text) {
+  container.replaceChildren(el('p', 'hint', text));
+}
+function renderStatusDonut(snags) {
+  const container = $('chartStatus'); container.replaceChildren();
+  const total = snags.total;
+  if (!total) return emptyChart(container, 'No snags logged yet. The donut fills in as work is logged.');
+  const wrap = el('div', 'donut-wrap');
+  const size = 190, r = 70, cx = size / 2, cy = size / 2, stroke = 26;
+  const chart = svg('svg', { viewBox: `0 0 ${size} ${size}`, role: 'img', 'aria-label': `Snags by status, ${total} total` });
+  chart.style.maxWidth = '190px';
+  let angle = -90;
+  for (const status of SNAG_STATUSES) {
+    const count = snags.byStatus[status];
+    if (!count) continue;
+    const sweep = (count / total) * 360;
+    const pad = total > count ? 2.2 : 0; /* 2px-equivalent gap between slices */
+    const a0 = (angle + pad / 2) * Math.PI / 180, a1 = (angle + sweep - pad / 2) * Math.PI / 180;
+    const large = sweep - pad > 180 ? 1 : 0;
+    const d = `M ${cx + r * Math.cos(a0)} ${cy + r * Math.sin(a0)} A ${r} ${r} 0 ${large} 1 ${cx + r * Math.cos(a1)} ${cy + r * Math.sin(a1)}`;
+    const arc = svg('path', { d, fill: 'none', stroke: STATUS_COLORS[status], 'stroke-width': stroke, 'stroke-linecap': 'butt' });
+    const title = svg('title'); title.textContent = `${status}: ${count}`; arc.appendChild(title);
+    chart.appendChild(arc);
+    angle += sweep;
+  }
+  const value = svg('text', { x: cx, y: cy - 2, 'text-anchor': 'middle', class: 'donut-center-value' }); value.textContent = String(total);
+  const label = svg('text', { x: cx, y: cy + 18, 'text-anchor': 'middle', class: 'donut-center-label' }); label.textContent = 'snags';
+  chart.append(value, label);
+  const legend = el('div', 'legend');
+  for (const status of SNAG_STATUSES) {
+    const item = el('span'); const dot = el('i'); dot.style.background = STATUS_COLORS[status];
+    item.append(dot, document.createTextNode(`${status} · ${snags.byStatus[status]}`)); legend.appendChild(item);
+  }
+  wrap.append(chart, legend); container.appendChild(wrap);
+}
+function horizontalBars(container, rows, colorFor, ariaLabel) {
+  container.replaceChildren();
+  if (!rows.length || rows.every(row => !row.count)) return emptyChart(container, 'Nothing to chart yet.');
+  const max = Math.max(...rows.map(row => row.count), 1);
+  const rowH = 34, labelW = 110, valueW = 40, width = 460;
+  const chart = svg('svg', { viewBox: `0 0 ${width} ${rows.length * rowH}`, role: 'img', 'aria-label': ariaLabel });
+  rows.forEach((row, index) => {
+    const y = index * rowH;
+    const barW = Math.max(((width - labelW - valueW) * row.count) / max, row.count ? 3 : 0);
+    const label = svg('text', { x: labelW - 10, y: y + 21, 'text-anchor': 'end', class: 'bar-label' }); label.textContent = row.label;
+    const bar = svg('rect', { x: labelW, y: y + 8, width: barW, height: 18, rx: 4, fill: colorFor(row) });
+    const title = svg('title'); title.textContent = `${row.label}: ${row.count}`; bar.appendChild(title);
+    const value = svg('text', { x: labelW + barW + 8, y: y + 21, class: 'bar-value' }); value.textContent = String(row.count);
+    chart.append(label, bar, value);
+  });
+  container.appendChild(chart);
+}
+function renderPriorityBars(byPriority) {
+  horizontalBars($('chartPriority'), Object.keys(PRIORITY_COLORS).map(p => ({ label: p, count: byPriority[p] || 0 })), row => PRIORITY_COLORS[row.label], 'Snags by priority');
+}
+function renderTradeBars(byTrade) {
+  horizontalBars($('chartTrade'), byTrade.map(t => ({ label: t.trade, count: t.count })), () => '#0999a8', 'Snags by trade');
+}
+function renderFindingsBar(findings, runsTotal) {
+  const rows = Object.keys(FINDING_STATE_LABELS).map(key => ({ label: FINDING_STATE_LABELS[key], count: findings[key] || 0, key }));
+  const container = $('chartFindings');
+  horizontalBars(container, rows, row => FINDING_STATE_COLORS[row.key], 'AI findings by review state');
+  container.appendChild(el('p', 'hint', `${runsTotal} analysis run(s) to date. Every AI finding requires a human decision before it becomes work.`));
+}
+function renderTrend(days) {
+  const container = $('chartTrend'); container.replaceChildren();
+  const rawMax = Math.max(...days.map(d => Math.max(d.created, d.resolved)), 1);
+  const max = rawMax % 2 ? rawMax + 1 : rawMax; /* even top so the midpoint tick is an integer */
+  const width = 940, height = 210, padL = 34, padB = 26, padT = 12, plotW = width - padL - 12, plotH = height - padT - padB;
+  const chart = svg('svg', { viewBox: `0 0 ${width} ${height}`, role: 'img', 'aria-label': 'Snags logged versus closed out per day, last 14 days' });
+  for (let tick = 0; tick <= 2; tick += 1) {
+    const value = (max * tick) / 2;
+    const y = padT + plotH - (plotH * tick) / 2;
+    chart.appendChild(svg('line', { x1: padL, y1: y, x2: padL + plotW, y2: y, stroke: '#e4ebe9', 'stroke-width': 1 }));
+    const text = svg('text', { x: padL - 6, y: y + 4, 'text-anchor': 'end', class: 'axis-text' }); text.textContent = String(value);
+    chart.appendChild(text);
+  }
+  const x = index => padL + (plotW * index) / (days.length - 1);
+  const y = value => padT + plotH - (plotH * value) / max;
+  const series = [{ key: 'created', color: '#d9480f', label: 'Logged' }, { key: 'resolved', color: '#0999a8', label: 'Closed out' }];
+  for (const s of series) {
+    const d = days.map((day, index) => `${index ? 'L' : 'M'} ${x(index)} ${y(day[s.key])}`).join(' ');
+    chart.appendChild(svg('path', { d, fill: 'none', stroke: s.color, 'stroke-width': 2, 'stroke-linejoin': 'round' }));
+    days.forEach((day, index) => {
+      if (!day[s.key]) return;
+      const dot = svg('circle', { cx: x(index), cy: y(day[s.key]), r: 3.5, fill: s.color, stroke: '#fff', 'stroke-width': 2 });
+      const title = svg('title'); title.textContent = `${day.day} — ${s.label}: ${day[s.key]}`; dot.appendChild(title);
+      chart.appendChild(dot);
+    });
+  }
+  days.forEach((day, index) => {
+    if (index % 2) return;
+    const text = svg('text', { x: x(index), y: height - 6, 'text-anchor': 'middle', class: 'axis-text' }); text.textContent = day.day.slice(5);
+    chart.appendChild(text);
+  });
+  container.appendChild(chart);
+  const legend = el('div', 'legend');
+  for (const s of series) { const item = el('span'); const dot = el('i'); dot.style.background = s.color; item.append(dot, document.createTextNode(s.label)); legend.appendChild(item); }
+  container.appendChild(legend);
+}
+
+/* ── Capture & analyze ───────────────────────────── */
 function validateContext() {
   const url = $('openspaceUrl').value.trim(); const reason = $('unlinkedReason').value.trim();
   if (!url && !reason) throw new Error('Attach an OpenSpace link or explain why the photos are unlinked.');
@@ -57,17 +231,20 @@ function previewViewer() {
   try {
     const { url } = validateContext();
     if (!url) { toast('No OpenSpace link was supplied for this run.', true); return; }
-    const parsed = new URL(url); if (parsed.protocol !== 'https:' || !(parsed.hostname === 'openspace.ai' || parsed.hostname.endsWith('.openspace.ai'))) throw new Error('Use an HTTPS openspace.ai share link.');
-    $('openspaceViewer').src = parsed.toString(); $('viewerWrap').classList.remove('hidden'); $('openCapture').href = parsed.toString(); $('openCapture').classList.remove('hidden');
+    const parsed = new URL(url);
+    if (parsed.protocol !== 'https:' || !(parsed.hostname === 'openspace.ai' || parsed.hostname.endsWith('.openspace.ai'))) throw new Error('Use an HTTPS openspace.ai share link.');
+    $('openspaceViewer').src = parsed.toString(); $('viewerWrap').classList.remove('hidden');
+    $('openCapture').href = parsed.toString(); $('openCapture').classList.remove('hidden');
   } catch (error) { toast(error.message, true); }
 }
 function renderFilePreviews() {
   const container = $('imagePreviews'); container.replaceChildren();
   state.selectedFiles.forEach((file, index) => {
-    const card = document.createElement('div'); card.className = 'preview';
-    const image = document.createElement('img'); image.src = URL.createObjectURL(file); image.alt = `Selected evidence: ${file.name}`;
-    const text = document.createElement('span'); text.textContent = `${file.name} · ${Math.ceil(file.size / 1024)} KB`;
-    const remove = document.createElement('button'); remove.type = 'button'; remove.className = 'quiet'; remove.textContent = 'Remove'; remove.addEventListener('click', () => { state.selectedFiles.splice(index, 1); renderFilePreviews(); });
+    const card = el('div', 'preview');
+    const image = el('img'); image.src = URL.createObjectURL(file); image.alt = `Selected evidence: ${file.name}`;
+    const text = el('span', null, `${file.name} · ${Math.ceil(file.size / 1024)} KB`);
+    const remove = el('button', 'quiet', 'Remove'); remove.type = 'button';
+    remove.addEventListener('click', () => { state.selectedFiles.splice(index, 1); renderFilePreviews(); });
     card.append(image, text, remove); container.appendChild(card);
   });
 }
@@ -83,51 +260,374 @@ async function startAnalysis() {
     const { url, reason } = validateContext();
     if (!state.selectedFiles.length) throw new Error('Choose at least one supported image.');
     if (!$('analysisConsent').checked) throw new Error('Confirm the MimaarAI data-processing disclosure first.');
-    const form = new FormData(); form.set('projectId', currentProject()); form.set('openspaceUrl', url); form.set('unlinkedReason', reason); form.set('consentAccepted', 'true'); state.selectedFiles.forEach(file => form.append('images', file));
+    const form = new FormData();
+    form.set('projectId', currentProject()); form.set('openspaceUrl', url); form.set('unlinkedReason', reason); form.set('consentAccepted', 'true');
+    state.selectedFiles.forEach(file => form.append('images', file));
     const data = await api('/api/analysis-runs', { method: 'POST', body: form });
-    state.activeRun = data.runId; $('runStatus').classList.remove('hidden'); message('analysisMessage', 'Images staged. Tracking each file below.'); await loadRun();
+    state.activeRun = data.runId;
+    $('runStatus').classList.remove('hidden');
+    message('analysisMessage', 'Images staged. The pipeline below tracks each file.');
+    await loadRun();
   } catch (error) { message('analysisMessage', error.message, true); }
 }
 function renderRun(run) {
   const container = $('runItems'); container.replaceChildren();
-  run.assets.forEach(asset => { const row = document.createElement('div'); row.className = `run-item ${asset.state}`; const title = document.createElement('strong'); title.textContent = asset.original_name; const detail = document.createElement('span'); detail.textContent = asset.state === 'failed' ? `Failed: ${asset.upstream_error || 'Unknown error'}` : asset.state; row.append(title, detail); container.appendChild(row); });
-  if (['completed', 'completed_with_errors', 'failed', 'cancelled'].includes(run.state)) { window.clearTimeout(state.poller); if (run.findings.length) toast(`${run.findings.length} draft finding(s) are ready for review.`); }
+  for (const asset of run.assets) {
+    const item = el('div', `run-item ${asset.state}`);
+    const head = el('div', 'run-item-head');
+    head.append(el('strong', null, asset.original_name), el('span', 'run-state', asset.state.replace(/_/g, ' ')));
+    const rail = el('div', 'progress-rail');
+    const fill = el('div', 'progress-fill');
+    fill.style.width = `${asset.state === 'completed' ? 100 : asset.state === 'failed' ? 100 : asset.progress || (asset.state === 'processing' ? 5 : 0)}%`;
+    rail.appendChild(fill);
+    const msg = el('p', 'progress-msg', asset.state === 'failed' ? (asset.upstream_error || 'Analysis failed.') : asset.state === 'completed' ? 'Analysis complete.' : asset.progress_message || (asset.state === 'queued' ? 'Waiting for a pipeline slot…' : 'Contacting MimaarAI…'));
+    item.append(head, rail, msg);
+    container.appendChild(item);
+  }
+  const done = ['completed', 'completed_with_errors', 'failed', 'cancelled'].includes(run.state);
+  $('cancelRun').classList.toggle('hidden', done);
+  if (done) {
+    window.clearTimeout(state.poller);
+    $('runSummary').textContent = run.findings.length
+      ? `${run.findings.length} draft finding(s) are waiting in the review queue. Nothing becomes a snag without a human decision.`
+      : 'The run finished without any draft findings.';
+    if (run.findings.length) { refreshReviewBadge(); toast(`${run.findings.length} draft finding(s) ready for review.`); }
+  } else { $('runSummary').textContent = ''; }
 }
 async function loadRun() {
   if (!state.activeRun) return;
-  try { const run = await api(`/api/analysis-runs/${encodeURIComponent(state.activeRun)}`); renderRun(run); if (!['completed', 'completed_with_errors', 'failed', 'cancelled'].includes(run.state)) state.poller = window.setTimeout(loadRun, 1800); }
-  catch (error) { message('analysisMessage', error.message, true); }
+  try {
+    const run = await api(`/api/analysis-runs/${encodeURIComponent(state.activeRun)}`);
+    renderRun(run);
+    if (!['completed', 'completed_with_errors', 'failed', 'cancelled'].includes(run.state)) state.poller = window.setTimeout(loadRun, 1500);
+  } catch (error) { message('analysisMessage', error.message, true); }
 }
+async function cancelRun() {
+  if (!state.activeRun) return;
+  try { await api(`/api/analysis-runs/${encodeURIComponent(state.activeRun)}/cancel`, { method: 'POST' }); toast('Queued images cancelled.'); await loadRun(); }
+  catch (error) { toast(error.message, true); }
+}
+
+/* ── Review queue ────────────────────────────────── */
 function findingCard(finding) {
-  const card = document.createElement('article'); card.className = 'finding card';
-  const heading = document.createElement('div'); heading.className = 'finding-heading'; const title = document.createElement('h3'); title.textContent = finding.title; const badge = document.createElement('span'); badge.className = `badge ${finding.priority || 'Medium'}`; badge.textContent = finding.priority || 'Medium'; heading.append(title, badge);
-  const description = document.createElement('p'); description.textContent = finding.description || 'No description returned.';
-  const meta = document.createElement('p'); meta.className = 'muted'; meta.textContent = `${finding.category || 'Uncategorised'} · ${finding.trade || 'No trade'} · ${finding.original_name}`;
-  const context = document.createElement('div'); context.className = 'finding-links';
-  const image = document.createElement('a'); image.href = `/api/assets/${encodeURIComponent(finding.asset_id)}/content`; image.target = '_blank'; image.rel = 'noopener'; image.textContent = 'Open evidence'; context.appendChild(image);
-  if (finding.openspace_url) { const capture = document.createElement('a'); capture.href = finding.openspace_url; capture.target = '_blank'; capture.rel = 'noopener'; capture.textContent = 'Open capture'; context.appendChild(capture); }
-  card.append(heading, description, meta, context);
+  const card = el('article', 'finding card');
+  const evidence = el('div', 'finding-evidence');
+  const image = el('img'); image.src = `/api/assets/${encodeURIComponent(finding.asset_id)}/content`; image.alt = `Evidence photo for: ${finding.title}`; image.loading = 'lazy';
+  const openEvidence = el('a', 'quiet-link', 'Open full size'); openEvidence.href = image.src; openEvidence.target = '_blank'; openEvidence.rel = 'noopener';
+  evidence.append(image, openEvidence);
+  if (finding.openspace_url) { const capture = el('a', 'quiet-link', 'Open capture'); capture.href = finding.openspace_url; capture.target = '_blank'; capture.rel = 'noopener'; evidence.appendChild(capture); }
+
+  const body = el('div', 'finding-body');
+  const heading = el('div', 'finding-heading');
+  const titleWrap = el('div');
+  titleWrap.append(el('h3', null, finding.title), el('span', `state-chip ${finding.state}`, FINDING_STATE_LABELS[finding.state] || finding.state));
+  heading.append(titleWrap, el('span', `badge ${finding.priority || 'Medium'}`, finding.priority || 'Medium'));
+  const description = el('p', null, finding.description || 'No description returned.');
+  const meta = el('p', 'muted', [finding.category || 'Uncategorised', finding.trade || 'No trade', finding.original_name, finding.confidence != null ? `confidence ${(finding.confidence * 100).toFixed(0)}%` : null].filter(Boolean).join(' · '));
+  body.append(heading, description, meta);
+  if (finding.recommendation) body.appendChild(el('p', 'hint', `Recommendation: ${finding.recommendation}`));
   const claims = Array.isArray(finding.code_claims) ? finding.code_claims : [];
-  if (claims.length) { const warning = document.createElement('p'); warning.className = 'warning'; warning.textContent = `Unverified code suggestion: ${claims.join('; ')}`; card.appendChild(warning); }
-  const actions = document.createElement('div'); actions.className = 'finding-actions';
-  if (finding.state === 'needs_review' && ['reviewer', 'admin'].includes(state.user.role)) {
-    const approve = document.createElement('button'); approve.textContent = 'Approve'; approve.className = 'primary'; approve.addEventListener('click', () => decide(finding.id, 'approve')); const reject = document.createElement('button'); reject.textContent = 'Reject'; reject.addEventListener('click', () => decide(finding.id, 'reject')); actions.append(approve, reject);
+  if (claims.length) body.appendChild(el('p', 'warning', `Unverified code suggestion — confirm before citing: ${claims.join('; ')}`));
+
+  const actions = el('div', 'finding-actions');
+  if (finding.state === 'needs_review' && isReviewer()) {
+    const approve = el('button', 'primary', 'Approve'); approve.addEventListener('click', () => decide(finding.id, 'approve'));
+    const reject = el('button', null, 'Reject'); reject.addEventListener('click', () => decide(finding.id, 'reject'));
+    actions.append(approve, reject);
   }
-  if (finding.state === 'approved' && ['reviewer', 'admin'].includes(state.user.role)) {
-    const input = document.createElement('input'); input.type = 'url'; input.placeholder = 'Paste resulting OpenSpace Field Note link'; input.setAttribute('aria-label', 'OpenSpace Field Note link'); const handoff = document.createElement('button'); handoff.textContent = 'Mark handed off'; handoff.className = 'primary'; handoff.addEventListener('click', () => handoffFinding(finding.id, input.value)); actions.append(input, handoff);
+  if (finding.state === 'approved' && isReviewer()) {
+    const promote = el('button', 'primary', 'Create snag from finding'); promote.addEventListener('click', () => promoteFinding(finding.id));
+    actions.appendChild(promote);
+    const input = el('input'); input.type = 'url'; input.placeholder = 'Paste resulting OpenSpace Field Note link'; input.setAttribute('aria-label', 'OpenSpace Field Note link');
+    const handoff = el('button', null, 'Mark handed off'); handoff.addEventListener('click', () => handoffFinding(finding.id, input.value));
+    actions.append(input, handoff);
   }
-  if (finding.openspace_field_note_url) { const note = document.createElement('a'); note.href = finding.openspace_field_note_url; note.target = '_blank'; note.rel = 'noopener'; note.textContent = 'Open handed-off Field Note'; actions.append(note); }
-  if (actions.childElementCount) card.appendChild(actions); return card;
+  if (finding.openspace_field_note_url) { const note = el('a', 'quiet-link', 'Open handed-off Field Note'); note.href = finding.openspace_field_note_url; note.target = '_blank'; note.rel = 'noopener'; actions.appendChild(note); }
+  if (actions.childElementCount) body.appendChild(actions);
+  card.append(evidence, body);
+  return card;
 }
-async function loadFindings() { const list = $('findingList'); list.replaceChildren(); try { const query = new URLSearchParams({ projectId: currentProject() }); if ($('findingState').value) query.set('state', $('findingState').value); const data = await api(`/api/findings?${query}`); if (!data.items.length) { const empty = document.createElement('p'); empty.className = 'empty'; empty.textContent = 'No findings match this view.'; list.appendChild(empty); return; } data.items.forEach(item => list.appendChild(findingCard(item))); } catch (error) { toast(error.message, true); } }
-async function decide(id, decision) { const note = decision === 'reject' ? window.prompt('Why is this finding rejected?') : ''; if (decision === 'reject' && !note) return; try { await api(`/api/findings/${encodeURIComponent(id)}/decision`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ decision, note }) }); toast(`Finding ${decision}d.`); loadFindings(); } catch (error) { toast(error.message, true); } }
-async function handoffFinding(id, openspaceFieldNoteUrl) { try { await api(`/api/findings/${encodeURIComponent(id)}/handoff`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ openspaceFieldNoteUrl }) }); toast('Handoff link recorded. OpenSpace remains the system of record.'); loadFindings(); } catch (error) { toast(error.message, true); } }
-async function loadSpecs() { const list = $('specList'); list.replaceChildren(); try { const data = await api(`/api/spec-clauses?projectId=${encodeURIComponent(currentProject())}`); if (!data.items.length) { const empty = document.createElement('p'); empty.className = 'empty'; empty.textContent = 'No reviewed clauses have been added.'; list.appendChild(empty); return; } data.items.forEach(item => { const row = document.createElement('article'); row.className = 'spec-row'; const title = document.createElement('strong'); title.textContent = item.name; const text = document.createElement('p'); text.textContent = item.description; const meta = document.createElement('small'); meta.textContent = `${item.active ? 'Active' : 'Draft'} · ${item.source_name || 'Manual source'}${item.source_page ? ` · p. ${item.source_page}` : ''}`; row.append(title, text, meta); list.appendChild(row); }); } catch (error) { toast(error.message, true); } }
-async function saveSpec(event) { event.preventDefault(); message('specMessage'); try { await api('/api/spec-clauses', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ projectId: currentProject(), name: $('specName').value, description: $('specDescription').value, category: $('specCategory').value, priority: $('specPriority').value, sourceName: $('specSource').value, sourcePage: $('specPage').value, active: $('specActive').checked }) }); event.currentTarget.reset(); message('specMessage', 'Clause saved.'); loadSpecs(); } catch (error) { message('specMessage', error.message, true); } }
-async function createInvite(event) { event.preventDefault(); message('adminMessage'); try { const data = await api('/api/admin/invites', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: $('inviteEmail').value, role: $('inviteRole').value }) }); $('inviteUrl').value = data.inviteUrl; $('inviteUrlWrap').classList.remove('hidden'); message('adminMessage', `Invite expires ${new Date(data.expiresAt).toLocaleString()}.`); } catch (error) { message('adminMessage', error.message, true); } }
+async function loadFindings() {
+  const list = $('findingList'); list.replaceChildren();
+  try {
+    const query = new URLSearchParams({ projectId: currentProject() });
+    if ($('findingState').value) query.set('state', $('findingState').value);
+    const data = await api(`/api/findings?${query}`);
+    if (!data.items.length) {
+      const empty = el('p', 'empty');
+      empty.append(el('strong', null, 'Nothing waiting here.'), document.createTextNode('Run an analysis from Capture & analyze and its draft findings will queue up for review.'));
+      list.appendChild(empty); return;
+    }
+    data.items.forEach(item => list.appendChild(findingCard(item)));
+  } catch (error) { toast(error.message, true); }
+}
+async function decide(id, decision) {
+  const note = decision === 'reject' ? window.prompt('Why is this finding rejected?') : '';
+  if (decision === 'reject' && !note) return;
+  try {
+    await api(`/api/findings/${encodeURIComponent(id)}/decision`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ decision, note }) });
+    toast(decision === 'approve' ? 'Finding approved.' : 'Finding rejected.');
+    refreshReviewBadge(); loadFindings();
+  } catch (error) { toast(error.message, true); }
+}
+async function promoteFinding(id) {
+  try {
+    const snag = await api(`/api/findings/${encodeURIComponent(id)}/promote`, { method: 'POST' });
+    toast(`Snag ${snag.human_ref} created from this finding.`);
+    loadFindings();
+  } catch (error) { toast(error.message, true); }
+}
+async function handoffFinding(id, openspaceFieldNoteUrl) {
+  try {
+    await api(`/api/findings/${encodeURIComponent(id)}/handoff`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ openspaceFieldNoteUrl }) });
+    toast('Handoff link recorded. OpenSpace remains the system of record.');
+    loadFindings();
+  } catch (error) { toast(error.message, true); }
+}
+
+/* ── Snags ───────────────────────────────────────── */
+function snagQuery() {
+  const query = new URLSearchParams({ projectId: currentProject() });
+  if ($('snagSearch').value.trim()) query.set('search', $('snagSearch').value.trim());
+  if ($('snagPriority').value) query.set('priority', $('snagPriority').value);
+  query.set('sort', $('snagSort').value);
+  return query;
+}
+async function loadSnags() {
+  try {
+    const data = await api(`/api/snags?${snagQuery()}`);
+    state.snags = data.items;
+    $('exportCsv').href = `/api/snags/export/csv?${snagQuery()}`;
+    $('exportPdf').href = `/api/snags/export/pdf?${snagQuery()}`;
+    renderSnags();
+  } catch (error) { toast(error.message, true); }
+}
+function renderSnags() {
+  if (state.snagView === 'board') renderBoard(); else renderList();
+  $('snagBoard').classList.toggle('hidden', state.snagView !== 'board');
+  $('snagList').classList.toggle('hidden', state.snagView !== 'list');
+}
+function snagCardNode(snag) {
+  const card = el('article', 'snag-card');
+  card.draggable = true; card.dataset.id = snag.id; card.tabIndex = 0;
+  card.setAttribute('role', 'button'); card.setAttribute('aria-label', `${snag.human_ref}: ${snag.title}`);
+  const top = el('div', 'snag-card-top');
+  top.append(el('span', 'ref-tag', snag.human_ref), el('span', `badge ${snag.priority}`, snag.priority));
+  const meta = el('div', 'snag-card-meta');
+  for (const bit of [snag.trade, [snag.location, snag.floor, snag.zone].filter(Boolean).join(' / '), snag.assignee].filter(Boolean)) meta.appendChild(el('span', null, bit));
+  if (snag.due_date) meta.appendChild(el('span', isOverdue(snag) ? 'overdue' : null, isOverdue(snag) ? `OVERDUE ${snag.due_date}` : `Due ${snag.due_date}`));
+  card.append(top, el('div', 'snag-card-title', snag.title), meta);
+  if (snag.source_finding_id) card.appendChild(el('span', 'snag-ai-chip', 'FROM AI FINDING · HUMAN APPROVED'));
+  card.addEventListener('click', () => openDrawer(snag));
+  card.addEventListener('keydown', event => { if (event.key === 'Enter') openDrawer(snag); });
+  card.addEventListener('dragstart', event => { event.dataTransfer.setData('text/plain', snag.id); card.classList.add('dragging'); });
+  card.addEventListener('dragend', () => card.classList.remove('dragging'));
+  return card;
+}
+function renderBoard() {
+  const board = $('snagBoard'); board.replaceChildren();
+  for (const status of SNAG_STATUSES) {
+    const column = el('div', 'board-col');
+    column.style.setProperty('--col', STATUS_COLORS[status]);
+    column.dataset.status = status;
+    const snags = state.snags.filter(s => s.status === status);
+    const head = el('div', 'board-col-head');
+    head.append(el('h3', null, status), el('span', 'board-col-count', String(snags.length)));
+    column.appendChild(head);
+    snags.forEach(snag => column.appendChild(snagCardNode(snag)));
+    if (!snags.length) column.appendChild(el('p', 'hint', status === 'Open' ? 'No open snags. Log one or promote an approved finding.' : '—'));
+    column.addEventListener('dragover', event => { event.preventDefault(); column.classList.add('drag-over'); });
+    column.addEventListener('dragleave', () => column.classList.remove('drag-over'));
+    column.addEventListener('drop', async event => {
+      event.preventDefault(); column.classList.remove('drag-over');
+      const snagId = event.dataTransfer.getData('text/plain');
+      const snag = state.snags.find(s => s.id === snagId);
+      if (!snag || snag.status === status) return;
+      try {
+        await api(`/api/snags/${encodeURIComponent(snagId)}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ version: snag.version, status }) });
+        toast(`${snag.human_ref} moved to ${status}.`);
+      } catch (error) { toast(error.message, true); }
+      loadSnags();
+    });
+    board.appendChild(column);
+  }
+}
+function renderList() {
+  const wrap = $('snagList'); wrap.replaceChildren();
+  if (!state.snags.length) {
+    const empty = el('p', 'empty');
+    empty.append(el('strong', null, 'The register is empty.'), document.createTextNode('Log the first snag with “+ New snag”, or promote an approved AI finding.'));
+    wrap.appendChild(empty); return;
+  }
+  const table = el('table', 'snag-table');
+  const head = el('thead'); const headRow = el('tr');
+  for (const column of ['Ref', 'Title', 'Status', 'Priority', 'Trade', 'Location', 'Assignee', 'Due']) headRow.appendChild(el('th', null, column));
+  head.appendChild(headRow); table.appendChild(head);
+  const body = el('tbody');
+  for (const snag of state.snags) {
+    const row = el('tr');
+    const refCell = el('td'); refCell.appendChild(el('span', 'ref-tag', snag.human_ref));
+    const dueCell = el('td', isOverdue(snag) ? 'overdue' : null, snag.due_date || '—');
+    if (isOverdue(snag)) dueCell.style.color = 'var(--signal)';
+    row.append(refCell, el('td', null, snag.title), el('td', null, snag.status), el('td', null, snag.priority), el('td', null, snag.trade || '—'), el('td', null, [snag.location, snag.floor, snag.zone].filter(Boolean).join(' / ') || '—'), el('td', null, snag.assignee || '—'), dueCell);
+    row.addEventListener('click', () => openDrawer(snag));
+    body.appendChild(row);
+  }
+  table.appendChild(body); wrap.appendChild(table);
+}
+
+/* ── Snag drawer ─────────────────────────────────── */
+function openDrawer(snag = null) {
+  state.drawerSnag = snag;
+  message('drawerMessage');
+  $('drawerTitle').textContent = snag ? snag.title : 'New snag';
+  $('drawerRef').textContent = snag ? snag.human_ref : '';
+  $('drawerRef').classList.toggle('hidden', !snag);
+  $('drawerSave').textContent = snag ? 'Save changes' : 'Create snag';
+  $('drawerDelete').classList.toggle('hidden', !(snag && state.user.role === 'admin'));
+  $('drawerPhotos').classList.toggle('hidden', !snag);
+  $('s-title').value = snag?.title || '';
+  $('s-description').value = snag?.description || '';
+  $('s-status').value = snag?.status || 'Open';
+  $('s-priority').value = snag?.priority || 'Medium';
+  $('s-category').value = snag?.category || '';
+  $('s-trade').value = snag?.trade || '';
+  $('s-location').value = snag?.location || '';
+  $('s-floor').value = snag?.floor || '';
+  $('s-zone').value = snag?.zone || '';
+  $('s-assignee').value = snag?.assignee || '';
+  $('s-due').value = snag?.due_date || '';
+  $('s-root').value = snag?.root_cause || '';
+  $('s-reco').value = snag?.recommendation || '';
+  if (snag) renderPhotoStrip(snag);
+  $('snagDrawer').classList.remove('hidden');
+  $('drawerScrim').classList.remove('hidden');
+  $('s-title').focus();
+}
+function closeDrawer() { $('snagDrawer').classList.add('hidden'); $('drawerScrim').classList.add('hidden'); state.drawerSnag = null; }
+function renderPhotoStrip(snag) {
+  const strip = $('photoStrip'); strip.replaceChildren();
+  for (const key of snag.photos || []) {
+    const image = el('img'); image.src = `/api/snags/${encodeURIComponent(snag.id)}/photos/${encodeURIComponent(key)}`; image.alt = `Photo attached to ${snag.human_ref}`; image.loading = 'lazy';
+    strip.appendChild(image);
+  }
+  if (!(snag.photos || []).length) strip.appendChild(el('p', 'hint', 'No photos attached yet.'));
+}
+function drawerPayload() {
+  return {
+    title: $('s-title').value, description: $('s-description').value, status: $('s-status').value, priority: $('s-priority').value,
+    category: $('s-category').value, trade: $('s-trade').value, location: $('s-location').value, floor: $('s-floor').value,
+    zone: $('s-zone').value, assignee: $('s-assignee').value, due_date: $('s-due').value, root_cause: $('s-root').value, recommendation: $('s-reco').value
+  };
+}
+async function saveSnag(event) {
+  event.preventDefault(); message('drawerMessage');
+  try {
+    if (state.drawerSnag) {
+      await api(`/api/snags/${encodeURIComponent(state.drawerSnag.id)}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...drawerPayload(), version: state.drawerSnag.version }) });
+      toast(`${state.drawerSnag.human_ref} saved.`);
+    } else {
+      const snag = await api('/api/snags', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...drawerPayload(), projectId: currentProject() }) });
+      toast(`Snag ${snag.human_ref} created.`);
+    }
+    closeDrawer(); loadSnags();
+  } catch (error) { message('drawerMessage', error.message, true); }
+}
+async function deleteSnag() {
+  if (!state.drawerSnag) return;
+  if (!window.confirm(`Delete ${state.drawerSnag.human_ref}? This cannot be undone.`)) return;
+  try {
+    await api(`/api/snags/${encodeURIComponent(state.drawerSnag.id)}`, { method: 'DELETE' });
+    toast(`${state.drawerSnag.human_ref} deleted.`);
+    closeDrawer(); loadSnags();
+  } catch (error) { message('drawerMessage', error.message, true); }
+}
+async function uploadSnagPhotos(event) {
+  if (!state.drawerSnag) return;
+  const files = Array.from(event.target.files || []); event.target.value = '';
+  if (!files.length) return;
+  const form = new FormData();
+  files.slice(0, 5).forEach(file => form.append('photos', file));
+  try {
+    const snag = await api(`/api/snags/${encodeURIComponent(state.drawerSnag.id)}/photos`, { method: 'POST', body: form });
+    state.drawerSnag = snag; renderPhotoStrip(snag); toast('Photos attached.');
+  } catch (error) { message('drawerMessage', error.message, true); }
+}
+
+/* ── Specs & admin ───────────────────────────────── */
+async function loadSpecs() {
+  const list = $('specList'); list.replaceChildren();
+  try {
+    const data = await api(`/api/spec-clauses?projectId=${encodeURIComponent(currentProject())}`);
+    if (!data.items.length) {
+      const empty = el('p', 'empty');
+      empty.append(el('strong', null, 'No reviewed clauses yet.'), document.createTextNode('An admin can add verified specification context for the AI to cross-reference.'));
+      list.appendChild(empty); return;
+    }
+    for (const item of data.items) {
+      const row = el('article', 'spec-row');
+      row.append(el('strong', null, item.name), el('p', null, item.description));
+      const small = el('small', null, `${item.active ? 'Active' : 'Draft'} · ${item.source_name || 'Manual source'}${item.source_page ? ` · p. ${item.source_page}` : ''}`);
+      row.appendChild(small); list.appendChild(row);
+    }
+  } catch (error) { toast(error.message, true); }
+}
+async function saveSpec(event) {
+  event.preventDefault(); message('specMessage');
+  try {
+    await api('/api/spec-clauses', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ projectId: currentProject(), name: $('specName').value, description: $('specDescription').value, category: $('specCategory').value, priority: $('specPriority').value, sourceName: $('specSource').value, sourcePage: $('specPage').value, active: $('specActive').checked }) });
+    event.currentTarget.reset(); message('specMessage', 'Clause saved.'); loadSpecs();
+  } catch (error) { message('specMessage', error.message, true); }
+}
+async function createInvite(event) {
+  event.preventDefault(); message('adminMessage');
+  try {
+    const data = await api('/api/admin/invites', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: $('inviteEmail').value, role: $('inviteRole').value }) });
+    $('inviteUrl').value = data.inviteUrl; $('inviteUrlWrap').classList.remove('hidden');
+    message('adminMessage', `Invite expires ${new Date(data.expiresAt).toLocaleString()}.`);
+  } catch (error) { message('adminMessage', error.message, true); }
+}
+
+/* ── Wiring ──────────────────────────────────────── */
 function bindEvents() {
-  $('loginForm').addEventListener('submit', login); $('inviteForm').addEventListener('submit', acceptInvite); $('logoutButton').addEventListener('click', logout); $('loadViewer').addEventListener('click', previewViewer); $('analysisImages').addEventListener('change', chooseFiles); $('startAnalysis').addEventListener('click', startAnalysis); $('findingState').addEventListener('change', loadFindings); $('specForm').addEventListener('submit', saveSpec); $('inviteCreateForm').addEventListener('submit', createInvite);
+  $('loginForm').addEventListener('submit', login);
+  $('inviteForm').addEventListener('submit', acceptInvite);
+  $('logoutButton').addEventListener('click', logout);
+  $('loadViewer').addEventListener('click', previewViewer);
+  $('analysisImages').addEventListener('change', chooseFiles);
+  $('startAnalysis').addEventListener('click', startAnalysis);
+  $('cancelRun').addEventListener('click', cancelRun);
+  $('findingState').addEventListener('change', loadFindings);
+  $('specForm').addEventListener('submit', saveSpec);
+  $('inviteCreateForm').addEventListener('submit', createInvite);
+  $('snagForm').addEventListener('submit', saveSnag);
+  $('drawerClose').addEventListener('click', closeDrawer);
+  $('drawerScrim').addEventListener('click', closeDrawer);
+  $('drawerDelete').addEventListener('click', deleteSnag);
+  $('snagPhotoInput').addEventListener('change', uploadSnagPhotos);
+  $('newSnag').addEventListener('click', () => openDrawer(null));
+  $('snagPriority').addEventListener('change', loadSnags);
+  $('snagSort').addEventListener('change', loadSnags);
+  let searchTimer;
+  $('snagSearch').addEventListener('input', () => { window.clearTimeout(searchTimer); searchTimer = window.setTimeout(loadSnags, 250); });
+  $('viewBoard').addEventListener('click', () => setSnagView('board'));
+  $('viewList').addEventListener('click', () => setSnagView('list'));
+  document.addEventListener('keydown', event => { if (event.key === 'Escape' && !$('snagDrawer').classList.contains('hidden')) closeDrawer(); });
   document.querySelectorAll('[role="tab"]').forEach(tab => tab.addEventListener('click', () => switchTab(tab.dataset.tab)));
-  document.querySelector('.tabs').addEventListener('keydown', event => { if (!['ArrowLeft', 'ArrowRight'].includes(event.key)) return; const tabs = [...document.querySelectorAll('[role="tab"]')]; const index = tabs.indexOf(document.activeElement); const next = tabs[(index + (event.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length]; next.focus(); next.click(); });
+  document.querySelector('.tabs').addEventListener('keydown', event => {
+    if (!['ArrowLeft', 'ArrowRight'].includes(event.key)) return;
+    const tabs = [...document.querySelectorAll('[role="tab"]')].filter(tab => !tab.classList.contains('hidden'));
+    const index = tabs.indexOf(document.activeElement);
+    const next = tabs[(index + (event.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length];
+    next.focus(); next.click();
+  });
+}
+function setSnagView(view) {
+  state.snagView = view;
+  $('viewBoard').classList.toggle('active', view === 'board');
+  $('viewBoard').setAttribute('aria-pressed', String(view === 'board'));
+  $('viewList').classList.toggle('active', view === 'list');
+  $('viewList').setAttribute('aria-pressed', String(view === 'list'));
+  renderSnags();
 }
 document.addEventListener('DOMContentLoaded', () => { bindEvents(); hydrateSession(); });

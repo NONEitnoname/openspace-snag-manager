@@ -4,21 +4,27 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light">
-  <title>OpenSpace AI Review Companion</title>
+  <title>OpenSpace Snag Manager</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
   <main id="authView" class="auth-shell">
     <section class="auth-card" aria-labelledby="authTitle">
-      <p class="eyebrow">OpenSpace pilot</p>
-      <h1 id="authTitle">AI Review Companion</h1>
-      <p class="muted">Stage evidence, review AI suggestions, then hand off approved findings to OpenSpace Field Notes.</p>
+      <div class="auth-mark" aria-hidden="true">
+        <span class="auth-mark-tag">SNG</span>
+        <span class="auth-mark-rule"></span>
+      </div>
+      <p class="eyebrow">OpenSpace · MimaarAI pilot</p>
+      <h1 id="authTitle">Snag Manager</h1>
+      <p class="muted">Walk the capture, stage the evidence, review the AI's findings, close the snags.</p>
       <form id="loginForm" class="stack" novalidate>
         <label>Email <input id="loginEmail" type="email" autocomplete="email" required></label>
         <label>Password <input id="loginPassword" type="password" autocomplete="current-password" required minlength="12"></label>
         <button type="submit" class="primary">Sign in</button>
       </form>
       <form id="inviteForm" class="stack hidden" novalidate>
+        <p class="hint">You were invited to this pilot. Choose a password to activate your account.</p>
         <label>Set a password <input id="invitePassword" type="password" autocomplete="new-password" required minlength="12"></label>
         <button type="submit" class="primary">Accept invite</button>
       </form>
@@ -27,54 +33,144 @@
   </main>
 
   <div id="appView" class="app-shell hidden">
-    <header class="topbar">
-      <div><p class="eyebrow">OpenSpace pilot</p><h1>AI Review Companion</h1></div>
-      <div class="topbar-actions"><span id="userLabel" class="muted"></span><button id="logoutButton" class="quiet">Sign out</button></div>
+    <header class="titleblock">
+      <div class="titleblock-brand">
+        <span class="brand-tag" aria-hidden="true">SNG</span>
+        <div>
+          <p class="eyebrow">OpenSpace · MimaarAI pilot</p>
+          <h1>Snag Manager</h1>
+        </div>
+      </div>
+      <dl class="titleblock-meta">
+        <div><dt>Project</dt><dd id="tbProject">—</dd></div>
+        <div><dt>Sheet</dt><dd id="tbSheet">SM-01</dd></div>
+        <div><dt>Date</dt><dd id="tbDate">—</dd></div>
+        <div><dt>By</dt><dd id="tbUser">—</dd></div>
+      </dl>
+      <button id="logoutButton" class="quiet">Sign out</button>
     </header>
-    <nav class="tabs" role="tablist" aria-label="Pilot sections">
-      <button id="tab-analyze" role="tab" aria-selected="true" aria-controls="panel-analyze" data-tab="analyze">Analyze</button>
-      <button id="tab-review" role="tab" aria-selected="false" aria-controls="panel-review" data-tab="review">Review queue</button>
-      <button id="tab-specs" role="tab" aria-selected="false" aria-controls="panel-specs" data-tab="specs">Specifications</button>
-      <button id="tab-admin" role="tab" aria-selected="false" aria-controls="panel-admin" data-tab="admin">Admin</button>
+
+    <nav class="tabs" role="tablist" aria-label="Workspace sections">
+      <button id="tab-dashboard" role="tab" aria-selected="true" aria-controls="panel-dashboard" data-tab="dashboard" data-sheet="SM-01">Dashboard</button>
+      <button id="tab-analyze" role="tab" aria-selected="false" aria-controls="panel-analyze" data-tab="analyze" data-sheet="SM-02">Capture &amp; analyze</button>
+      <button id="tab-review" role="tab" aria-selected="false" aria-controls="panel-review" data-tab="review" data-sheet="SM-03">Review queue <span id="reviewCount" class="tab-count hidden"></span></button>
+      <button id="tab-snags" role="tab" aria-selected="false" aria-controls="panel-snags" data-tab="snags" data-sheet="SM-04">Snags</button>
+      <button id="tab-specs" role="tab" aria-selected="false" aria-controls="panel-specs" data-tab="specs" data-sheet="SM-05">Specifications</button>
+      <button id="tab-admin" role="tab" aria-selected="false" aria-controls="panel-admin" data-tab="admin" data-sheet="SM-06" class="admin-only hidden">Admin</button>
     </nav>
 
-    <section id="panel-analyze" role="tabpanel" aria-labelledby="tab-analyze" class="panel active">
+    <section id="panel-dashboard" role="tabpanel" aria-labelledby="tab-dashboard" class="panel active">
+      <div id="kpiRow" class="kpi-row" aria-live="polite"></div>
+      <div class="dash-grid">
+        <section class="card chart-card"><h2>Snags by status</h2><div id="chartStatus" class="chart"></div></section>
+        <section class="card chart-card"><h2>Snags by priority</h2><div id="chartPriority" class="chart"></div></section>
+        <section class="card chart-card wide"><h2>Fourteen-day flow — logged vs closed out</h2><div id="chartTrend" class="chart"></div></section>
+        <section class="card chart-card"><h2>Snags by trade</h2><div id="chartTrade" class="chart"></div></section>
+        <section class="card chart-card"><h2>AI review pipeline</h2><div id="chartFindings" class="chart"></div></section>
+      </div>
+    </section>
+
+    <section id="panel-analyze" role="tabpanel" aria-labelledby="tab-analyze" class="panel">
       <div class="two-column">
         <section class="card stack" aria-labelledby="analysisTitle">
-          <div><p class="eyebrow">1. Context</p><h2 id="analysisTitle">Stage an analysis run</h2></div>
-          <label>Project <select id="projectSelect"></select></label>
+          <div><p class="eyebrow">Step 1 · Context</p><h2 id="analysisTitle">Attach the capture</h2></div>
           <label>Exact OpenSpace share link <input id="openspaceUrl" type="url" placeholder="https://ksa.openspace.ai/ohplayer?..." autocomplete="off"></label>
-          <p class="hint">Paste the exact capture location. The companion cannot read a cross-origin viewer’s current position.</p>
-          <label>If no link is available, explain why <input id="unlinkedReason" type="text" maxlength="500" placeholder="Field photo before 360 capture"></label>
+          <p class="hint">Paste the exact capture location. The companion cannot read a cross-origin viewer's current position.</p>
+          <label>If no link is available, explain why <input id="unlinkedReason" type="text" maxlength="500" placeholder="Field photo taken before the 360 capture"></label>
           <div class="viewer-actions"><button id="loadViewer" type="button">Preview capture</button><a id="openCapture" class="quiet-link hidden" target="_blank" rel="noopener">Open in OpenSpace</a></div>
           <div id="viewerWrap" class="viewer hidden"><iframe id="openspaceViewer" title="Attached OpenSpace capture" allow="fullscreen"></iframe></div>
         </section>
         <section class="card stack" aria-labelledby="evidenceTitle">
-          <div><p class="eyebrow">2. Evidence and consent</p><h2 id="evidenceTitle">Choose images</h2></div>
-          <label class="file-picker">Select up to five JPEG, PNG, or WebP images (8 MB each)<input id="analysisImages" type="file" accept="image/jpeg,image/png,image/webp" multiple></label>
+          <div><p class="eyebrow">Step 2 · Evidence</p><h2 id="evidenceTitle">Stage the images</h2></div>
+          <label class="file-picker">Select up to five JPEG, PNG, or WebP images (8&nbsp;MB each)<input id="analysisImages" type="file" accept="image/jpeg,image/png,image/webp" multiple></label>
           <div id="imagePreviews" class="previews" aria-live="polite"></div>
           <label class="consent"><input id="analysisConsent" type="checkbox"> I confirm these images and the selected specification context may be sent to MimaarAI for this run.</label>
-          <button id="startAnalysis" type="button" class="primary">Send staged images to MimaarAI</button>
+          <button id="startAnalysis" type="button" class="primary">Send to MimaarAI</button>
           <p id="analysisMessage" class="form-message" role="status"></p>
         </section>
       </div>
-      <section id="runStatus" class="card hidden" aria-live="polite"><h2>Analysis status</h2><div id="runItems" class="run-items"></div></section>
+      <section id="runStatus" class="card run-card hidden" aria-live="polite">
+        <div class="panel-header"><div><p class="eyebrow">Analysis run</p><h2>Pipeline</h2></div><button id="cancelRun" class="quiet">Cancel queued images</button></div>
+        <div id="runItems" class="run-items"></div>
+        <p id="runSummary" class="hint"></p>
+      </section>
     </section>
 
     <section id="panel-review" role="tabpanel" aria-labelledby="tab-review" class="panel">
-      <div class="panel-header"><div><p class="eyebrow">Human decision required</p><h2>Review queue</h2></div><label>State <select id="findingState"><option value="needs_review">Needs review</option><option value="approved">Approved</option><option value="rejected">Rejected</option><option value="handed_off">Handed off</option><option value="">All</option></select></label></div>
+      <div class="panel-header">
+        <div><p class="eyebrow">Human decision required</p><h2>Review queue</h2></div>
+        <label>State <select id="findingState"><option value="needs_review">Needs review</option><option value="approved">Approved</option><option value="rejected">Rejected</option><option value="handed_off">Handed off</option><option value="">All</option></select></label>
+      </div>
       <div id="findingList" class="finding-list" aria-live="polite"></div>
     </section>
 
+    <section id="panel-snags" role="tabpanel" aria-labelledby="tab-snags" class="panel">
+      <div class="panel-header snag-toolbar">
+        <div><p class="eyebrow">Field loop</p><h2>Snag register</h2></div>
+        <div class="toolbar-controls">
+          <label class="search-label">Search <input id="snagSearch" type="search" placeholder="Ref, title, location, assignee…"></label>
+          <label>Priority <select id="snagPriority"><option value="">All</option><option>Critical</option><option>High</option><option>Medium</option><option>Low</option></select></label>
+          <label>Sort <select id="snagSort"><option value="created_desc">Newest</option><option value="priority">Priority</option><option value="due_date">Due date</option><option value="updated_desc">Recently updated</option></select></label>
+          <div class="view-toggle" role="group" aria-label="View">
+            <button id="viewBoard" class="active" aria-pressed="true">Board</button>
+            <button id="viewList" aria-pressed="false">List</button>
+          </div>
+          <a id="exportCsv" class="quiet-link" download>CSV</a>
+          <a id="exportPdf" class="quiet-link" download>PDF</a>
+          <button id="newSnag" class="primary">+ New snag</button>
+        </div>
+      </div>
+      <div id="snagBoard" class="board" aria-live="polite"></div>
+      <div id="snagList" class="snag-table-wrap hidden" aria-live="polite"></div>
+    </section>
+
     <section id="panel-specs" role="tabpanel" aria-labelledby="tab-specs" class="panel">
-      <div class="two-column"><section class="card"><p class="eyebrow">Verified context only</p><h2>Specification clauses</h2><div id="specList" class="stack compact"></div></section>
-      <form id="specForm" class="card stack"><p class="eyebrow">Admin</p><h2>Add a reviewed clause</h2><label>Name <input id="specName" required maxlength="250"></label><label>Requirement <textarea id="specDescription" required maxlength="5000"></textarea></label><label>Category <input id="specCategory" maxlength="80"></label><label>Priority <select id="specPriority"><option value="">None</option><option>Critical</option><option>High</option><option>Medium</option><option>Low</option></select></label><label>Source / revision <input id="specSource" maxlength="250" placeholder="Division 09, Rev C"></label><label>Page <input id="specPage" maxlength="80"></label><label class="consent"><input id="specActive" type="checkbox"> Mark verified and active</label><button class="primary" type="submit">Save clause</button><p id="specMessage" class="form-message" role="status"></p></form></div>
+      <div class="two-column">
+        <section class="card"><p class="eyebrow">Verified context only</p><h2>Specification clauses</h2><div id="specList" class="stack compact"></div></section>
+        <form id="specForm" class="card stack admin-only"><p class="eyebrow">Admin</p><h2>Add a reviewed clause</h2><label>Name <input id="specName" required maxlength="250"></label><label>Requirement <textarea id="specDescription" required maxlength="5000"></textarea></label><label>Category <input id="specCategory" maxlength="80"></label><label>Priority <select id="specPriority"><option value="">None</option><option>Critical</option><option>High</option><option>Medium</option><option>Low</option></select></label><label>Source / revision <input id="specSource" maxlength="250" placeholder="Division 09, Rev C"></label><label>Page <input id="specPage" maxlength="80"></label><label class="consent"><input id="specActive" type="checkbox"> Mark verified and active</label><button class="primary" type="submit">Save clause</button><p id="specMessage" class="form-message" role="status"></p></form>
+      </div>
     </section>
 
     <section id="panel-admin" role="tabpanel" aria-labelledby="tab-admin" class="panel">
       <form id="inviteCreateForm" class="card stack narrow"><p class="eyebrow">Admin access</p><h2>Create invite</h2><label>Email <input id="inviteEmail" type="email" required></label><label>Role <select id="inviteRole"><option value="inspector">Inspector</option><option value="reviewer">Reviewer</option><option value="admin">Admin</option></select></label><button type="submit" class="primary">Create 24-hour invite</button><label id="inviteUrlWrap" class="hidden">Copy this one-time invite link <input id="inviteUrl" readonly></label><p id="adminMessage" class="form-message" role="status"></p></form>
     </section>
   </div>
+
+  <div id="drawerScrim" class="drawer-scrim hidden"></div>
+  <aside id="snagDrawer" class="drawer hidden" role="dialog" aria-modal="true" aria-labelledby="drawerTitle">
+    <header class="drawer-head">
+      <div><span id="drawerRef" class="ref-tag hidden"></span><h2 id="drawerTitle">New snag</h2></div>
+      <button id="drawerClose" class="quiet" aria-label="Close">✕</button>
+    </header>
+    <form id="snagForm" class="drawer-body stack" novalidate>
+      <label>Title <input id="s-title" required maxlength="200" placeholder="Crack in column C12"></label>
+      <label>Description <textarea id="s-description" required maxlength="4000" placeholder="What is wrong, where exactly, and how bad."></textarea></label>
+      <div class="field-grid">
+        <label>Status <select id="s-status"><option>Open</option><option>In Progress</option><option>Resolved</option><option>Closed</option></select></label>
+        <label>Priority <select id="s-priority"><option>Critical</option><option>High</option><option selected>Medium</option><option>Low</option></select></label>
+        <label>Category <input id="s-category" maxlength="80" placeholder="Structural"></label>
+        <label>Trade <input id="s-trade" maxlength="120" placeholder="Civil"></label>
+        <label>Location <input id="s-location" maxlength="200" placeholder="Block B corridor"></label>
+        <label>Floor <input id="s-floor" maxlength="80" placeholder="L02"></label>
+        <label>Zone <input id="s-zone" maxlength="80" placeholder="Z-4"></label>
+        <label>Assignee <input id="s-assignee" maxlength="120" placeholder="Site engineer"></label>
+        <label>Due date <input id="s-due" type="date"></label>
+      </div>
+      <label>Root cause <textarea id="s-root" maxlength="2000" class="short"></textarea></label>
+      <label>Recommendation <textarea id="s-reco" maxlength="2000" class="short"></textarea></label>
+      <div id="drawerPhotos" class="drawer-photos hidden">
+        <p class="eyebrow">Photos</p>
+        <div id="photoStrip" class="photo-strip"></div>
+        <label class="file-picker small">Add photos (JPEG, PNG, WebP)<input id="snagPhotoInput" type="file" accept="image/jpeg,image/png,image/webp" multiple></label>
+      </div>
+      <div class="drawer-actions">
+        <button type="submit" class="primary" id="drawerSave">Create snag</button>
+        <button type="button" id="drawerDelete" class="danger hidden">Delete</button>
+      </div>
+      <p id="drawerMessage" class="form-message" role="status"></p>
+    </form>
+  </aside>
+
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
   <script src="/app.js"></script>
 </body>
