@@ -254,7 +254,6 @@ function loadOpenspaceHome() {
   $('openspaceViewer').src = `${openspaceOrigin()}/`;
   $('viewerStatus').textContent = 'Sign in to OpenSpace';
   $('viewerStatus').classList.remove('live');
-  $('captureView').disabled = true;
 }
 function initViewer() {
   if (state.viewerReady) return;
@@ -264,6 +263,7 @@ function initViewer() {
   if (saved) { $('openspaceUrl').value = saved; previewViewer({ silent: true }); }
   else loadOpenspaceHome();
 }
+function hasContext() { return Boolean($('openspaceUrl').value.trim() || $('unlinkedReason').value.trim()); }
 function validateContext() {
   const url = $('openspaceUrl').value.trim(); const reason = $('unlinkedReason').value.trim();
   if (!url && !reason) throw new Error('Attach an OpenSpace link or explain why the photos are unlinked.');
@@ -276,7 +276,6 @@ function previewViewer({ silent = false } = {}) {
     const parsed = parseOpenspaceUrl(url);
     $('openspaceViewer').src = parsed.toString();
     $('openCapture').href = parsed.toString(); $('openCapture').classList.remove('hidden');
-    $('captureView').disabled = false;
     $('viewerStatus').textContent = 'Capture loaded';
     $('viewerStatus').classList.add('live');
     writeStored('openspace_url', parsed.toString());
@@ -337,9 +336,15 @@ async function captureViewer() {
     const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', 0.92));
     if (!blob) throw new Error('The captured frame could not be encoded.');
     stageFiles([new File([blob], `openspace-view-${new Date().toISOString().replace(/[:.]/g, '-')}.jpg`, { type: 'image/jpeg' })]);
-    if (crop) toast('Viewer captured and staged. Tick consent, then send it to MimaarAI.');
-    else if (surface !== 'browser') toast('Captured the whole screen or window, not just the viewer, because that is what you chose to share. It may show more than the site — check the thumbnail before sending.', true);
-    else toast('Captured this tab, but the viewer was too small or scrolled out of view to crop to, so the whole tab is staged. Check the thumbnail before sending.', true);
+    if (surface !== 'browser') toast('Captured the whole screen or window, not just the viewer, because that is what you chose to share. It may show more than the site — check the thumbnail before sending.', true);
+    else if (!crop) toast('Captured this tab, but the viewer was too small or scrolled out of view to crop to, so the whole tab is staged. Check the thumbnail before sending.', true);
+    else if (!hasContext()) {
+      /* The viewer is a full OpenSpace session, so people navigate to a capture inside the
+         frame without ever pasting its link. Cross-origin, we cannot read where they are —
+         ask now, while they are still standing on the spot. */
+      toast('Viewer captured. Copy this capture\'s share link from OpenSpace into the box above so the finding can be traced back to this spot — or say why it is unlinked.', true);
+      $('openspaceUrl').focus();
+    } else toast('Viewer captured and staged. Tick consent, then send it to MimaarAI.');
   } catch (error) { toast(error.message || 'The view could not be captured.', true); }
 }
 const MAX_STAGED = 5;
