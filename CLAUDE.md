@@ -39,6 +39,10 @@ A cross-origin iframe cannot be read from canvas, so capture goes through the **
 ## MimaarAI integration
 `POST https://mimarai.com/api/v1/analyze` with `{ imageData: <base64>, mimeType, reviewType: 'construction_qa', includeCoordinates: true, query }` → `{ jobId }`; poll `GET /api/v1/analyze/:jobId` until `status === 'completed'`. Polling also carries `message`/`progress`, which is persisted per asset and drives the UI progress rails.
 
+The `query` carries the project's **active spec clauses** (`specContextFor`). The consent checkbox and the Specifications tab both promise this, so it must stay true — a test pins it. Inactive clauses must never be sent.
+
+Severity mapping is deliberately incomplete: the provider emits `'INFO'` when the model gave no severity, so anything outside `PROVIDER_SEVERITY` becomes `priority: null` and renders as "Unrated". Do not reintroduce a `Medium` default — it dresses an absent judgement as a measured one and it reaches the client's PDF.
+
 Auth: `MIMARAI_API_TOKEN`, or `MIMARAI_EMAIL` + `MIMARAI_PASSWORD` (preferred — login JWTs expire; the server mints one at boot and re-mints on a 401).
 
 **Fail-closed**: no credentials or a provider error ⇒ the asset is marked `failed` with the real upstream message. Findings are never fabricated. Code references from the model are shown as *unverified suggestions*.
@@ -56,7 +60,7 @@ Auth: `MIMARAI_API_TOKEN`, or `MIMARAI_EMAIL` + `MIMARAI_PASSWORD` (preferred �
 ```bash
 npm start            # production
 npm run dev          # node --watch
-npx jest --runInBand # tests (15)
+npx jest --runInBand # tests (29, server-side only — nothing covers public/)
 railway up           # deploy
 railway logs         # logs
 ```

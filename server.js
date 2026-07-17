@@ -18,6 +18,11 @@ const loginAttempts = new Map();
 fs.mkdirSync(uploadsDir, { recursive: true });
 
 app.disable('x-powered-by');
+/* Behind Railway's edge every request arrives from the proxy, so without this req.ip is
+   identical for everyone and one attacker's failed logins rate-limit the whole pilot.
+   Trusting exactly one hop makes req.ip the address Railway observed, which a client
+   cannot forge by sending its own X-Forwarded-For. */
+app.set('trust proxy', 1);
 app.use((req, res, next) => {
   res.setHeader('Content-Security-Policy', "default-src 'self'; img-src 'self' blob:; style-src 'self' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; script-src 'self'; connect-src 'self'; frame-src https://*.openspace.ai https://openspace.ai; base-uri 'self'; form-action 'self'");
   res.setHeader('Referrer-Policy', 'no-referrer');
@@ -58,13 +63,22 @@ function allowedOpenSpaceUrl(value) {
     return url.toString();
   } catch { return null; }
 }
+function rateLimitKey(bucket, req) { return `${bucket}:${req.ip || req.socket.remoteAddress || 'unknown'}`; }
+/* Now that keys are per-client rather than per-proxy, this map would grow forever without
+   a sweep — entries were only ever overwritten, never removed. */
+function evictExpiredAttempts(stamp) {
+  if (loginAttempts.size < 500) return;
+  for (const [key, entry] of loginAttempts) if (stamp - entry.startedAt > entry.windowMs) loginAttempts.delete(key);
+}
+function clearRateLimit(bucket, req) { loginAttempts.delete(rateLimitKey(bucket, req)); }
 function rateLimit(bucket, max, windowMs) {
   return (req, res, next) => {
-    const key = `${bucket}:${req.ip || req.socket.remoteAddress || 'unknown'}`;
+    const key = rateLimitKey(bucket, req);
     const entry = loginAttempts.get(key);
     const stamp = Date.now();
+    evictExpiredAttempts(stamp);
     if (!entry || stamp - entry.startedAt > windowMs) {
-      loginAttempts.set(key, { startedAt: stamp, count: 1 });
+      loginAttempts.set(key, { startedAt: stamp, count: 1, windowMs });
       return next();
     }
     entry.count += 1;
@@ -184,6 +198,20 @@ async function getProviderToken() { return providerToken || mintProviderToken();
 function providerConfigured() {
   return Boolean(process.env.MIMARAI_API_TOKEN || (process.env.MIMARAI_EMAIL && process.env.MIMARAI_PASSWORD));
 }
+const PROVIDER_SEVERITY = { CRITICAL: 'Critical', MAJOR: 'High', HIGH: 'High', MODERATE: 'Medium', MEDIUM: 'Medium', MINOR: 'Low', LOW: 'Low' };
+const ANALYSIS_QUERY = 'Identify visible construction quality, safety, MEP, finishing, and fire-protection issues. Return concise evidence-based findings. Code references are suggestions that require human verification.';
+/* The consent this run was gated on says the project's active specification clauses may be
+   sent with the image, and the Specifications tab tells admins active clauses are what the
+   AI checks against. Both are only true if we actually send them. */
+function specContextFor(projectId) {
+  const clauses = db.prepare('SELECT name, description, source_name, source_page FROM spec_clauses WHERE project_id = ? AND active = 1 ORDER BY created_at LIMIT 20').all(projectId);
+  if (!clauses.length) return '';
+  const lines = clauses.map(c => {
+    const source = c.source_name ? ` [${c.source_name}${c.source_page ? `, p. ${c.source_page}` : ''}]` : '';
+    return `- ${c.name}: ${String(c.description).slice(0, 600)}${source}`;
+  });
+  return `\n\nCheck the image against these project specification clauses, which a human has reviewed and marked active. Where a finding relates to one, name the clause:\n${lines.join('\n')}`;
+}
 function mappedFindings(data) {
   const findings = data?.analysis?.findings || data?.findings || [];
   if (!Array.isArray(findings)) return [];
@@ -191,7 +219,10 @@ function mappedFindings(data) {
     title: String(item.title || item.text?.split('.')[0] || 'Potential site issue').slice(0, 160),
     description: String(item.description || item.text || '').slice(0, 4000),
     category: item.category ? String(item.category).slice(0, 80) : null,
-    priority: item.severity === 'CRITICAL' ? 'Critical' : item.severity === 'MAJOR' ? 'High' : item.severity === 'MINOR' ? 'Low' : 'Medium',
+    /* Map what the provider actually says and refuse to guess the rest. It emits 'INFO'
+       when the model gave no severity at all, and turning that into a Medium badge dressed
+       an absent judgement up as a measured one, all the way into the client's PDF. */
+    priority: PROVIDER_SEVERITY[String(item.severity || '').toUpperCase()] || null,
     trade: item.trade ? String(item.trade).slice(0, 120) : null,
     recommendation: item.recommendation ? String(item.recommendation).slice(0, 2000) : null,
     confidence: Number.isFinite(Number(item.confidence)) ? Math.max(0, Math.min(1, Number(item.confidence))) : null,
@@ -216,11 +247,14 @@ async function processAsset(run, asset) {
     db.prepare("UPDATE analysis_assets SET state = 'failed', upstream_error = ?, updated_at = datetime('now') WHERE id = ?").run('MimaarAI is not configured for this pilot.', asset.id);
     return;
   }
+  let specClauseCount = 0;
   try {
     db.prepare("UPDATE analysis_assets SET state = 'processing', updated_at = datetime('now') WHERE id = ?").run(asset.id);
     const file = fs.readFileSync(path.join(uploadsDir, asset.storage_key));
+    const specContext = specContextFor(run.project_id);
+    specClauseCount = specContext ? specContext.split('\n- ').length - 1 : 0;
     const submitBody = JSON.stringify({ imageData: file.toString('base64'), mimeType: asset.mime_type, reviewType: 'construction_qa', includeCoordinates: true,
-      query: 'Identify visible construction quality, safety, MEP, finishing, and fire-protection issues. Return concise evidence-based findings. Code references are suggestions that require human verification.' });
+      query: `${ANALYSIS_QUERY}${specContext}` });
     let token = await getProviderToken();
     if (!token) throw new Error('MimaarAI sign-in failed; analysis is unavailable.');
     let submit = await providerFetch('https://mimarai.com/api/v1/analyze', {
@@ -285,8 +319,13 @@ async function processAsset(run, asset) {
     const findings = mappedFindings(result);
     runInTransaction(() => findings.forEach(f => createFinding.run(id('fdg'), run.id, asset.id, f.title, f.description, f.category, f.priority, f.trade, f.recommendation, f.confidence, json(f.codeClaims), result.metadata?.model || null)));
     db.prepare("UPDATE analysis_assets SET state = 'completed', progress = 100, progress_message = NULL, updated_at = datetime('now') WHERE id = ?").run(asset.id);
+    /* What the AI produced is the part of the trail that most needs to be reconstructable
+       later — it was the one part never written down. */
+    logEvent(run.project_id, run.created_by, 'analysis_asset', asset.id, 'analysed', { findings: findings.length, model: result.metadata?.model || null, specClausesSent: specClauseCount });
   } catch (error) {
-    db.prepare("UPDATE analysis_assets SET state = 'failed', upstream_error = ?, updated_at = datetime('now') WHERE id = ?").run(String(error.message || 'Provider analysis failed').slice(0, 1000), asset.id);
+    const message = String(error.message || 'Provider analysis failed').slice(0, 1000);
+    db.prepare("UPDATE analysis_assets SET state = 'failed', upstream_error = ?, updated_at = datetime('now') WHERE id = ?").run(message, asset.id);
+    logEvent(run.project_id, run.created_by, 'analysis_asset', asset.id, 'analysis_failed', { error: message });
   }
 }
 async function processRun(runId) {
@@ -324,6 +363,7 @@ app.post('/api/auth/login', rateLimit('login', 5, 15 * 60 * 1000), (req, res) =>
   const password = String(req.body?.password || '');
   const user = db.prepare('SELECT * FROM users WHERE email = ? AND active = 1').get(email);
   if (!user || !passwordMatches(password, user.password_hash)) return sendError(res, 401, 'login_invalid', 'Email or password is incorrect.');
+  clearRateLimit('login', req); /* the limit exists to stop guessing, not to punish a typo */
   const session = createSession(user.id);
   res.cookie('snag_session', session.token, cookieOptions());
   logEvent(null, user.id, 'session', user.id, 'login');
@@ -346,8 +386,13 @@ app.post('/api/auth/accept-invite', rateLimit('invite', 5, 15 * 60 * 1000), (req
   const existing = db.prepare('SELECT * FROM users WHERE email = ?').get(invite.email);
   const userId = existing?.id || id('usr');
   runInTransaction(() => {
-    if (existing) db.prepare('UPDATE users SET password_hash = ?, role = ?, active = 1 WHERE id = ?').run(passwordHash(password), invite.role, userId);
-    else db.prepare('INSERT INTO users (id, email, password_hash, role) VALUES (?, ?, ?, ?)').run(userId, invite.email, passwordHash(password), invite.role);
+    if (existing) {
+      db.prepare('UPDATE users SET password_hash = ?, role = ?, active = 1 WHERE id = ?').run(passwordHash(password), invite.role, userId);
+      /* This is the only password-change path there is. Rotating the credential has to
+         revoke what the old one opened, or a stolen cookie outlives the reset meant to
+         kill it — the sessions below are replaced by the fresh one we mint. */
+      db.prepare('DELETE FROM sessions WHERE user_id = ?').run(userId);
+    } else db.prepare('INSERT INTO users (id, email, password_hash, role) VALUES (?, ?, ?, ?)').run(userId, invite.email, passwordHash(password), invite.role);
     db.prepare('INSERT OR REPLACE INTO project_memberships (project_id, user_id, role) VALUES (?, ?, ?)').run(project.id, userId, invite.role);
     db.prepare("UPDATE invites SET used_at = datetime('now') WHERE token_hash = ?").run(invite.token_hash);
   });
@@ -380,6 +425,9 @@ app.post('/api/analysis-runs', requireAuth, requireCsrf, upload.array('images', 
   if (!req.files?.length) return sendError(res, 400, 'images_required', 'Upload at least one JPEG, PNG, or WebP image.');
   for (const file of req.files) if (!hasAllowedImageSignature(file.buffer, file.mimetype)) return sendError(res, 400, 'image_invalid', 'One or more files do not match their claimed image type.');
   const runId = id('run');
+  /* The transaction rolls back rows, not bytes: files written below survive a failure
+     unless we remove them ourselves. */
+  const writtenFiles = [];
   const stageRun = () => {
     db.prepare(`INSERT INTO analysis_runs (id, project_id, created_by, state, openspace_url, context_type, unlinked_reason, consent_at)
       VALUES (?, ?, ?, 'queued', ?, ?, ?, ?)`)
@@ -387,12 +435,17 @@ app.post('/api/analysis-runs', requireAuth, requireCsrf, upload.array('images', 
     for (const file of req.files) {
       const assetId = id('ast');
       const storageKey = `${assetId}${extensionFor(file.mimetype)}`;
-      fs.writeFileSync(path.join(uploadsDir, storageKey), file.buffer, { flag: 'wx' });
+      const storagePath = path.join(uploadsDir, storageKey);
+      fs.writeFileSync(storagePath, file.buffer, { flag: 'wx' });
+      writtenFiles.push(storagePath);
       db.prepare(`INSERT INTO analysis_assets (id, run_id, original_name, mime_type, byte_size, storage_key, sha256, state)
         VALUES (?, ?, ?, ?, ?, ?, ?, 'queued')`).run(assetId, runId, path.basename(file.originalname).slice(0, 255), file.mimetype, file.size, storageKey, sha256(file.buffer));
     }
   };
-  try { runInTransaction(stageRun); } catch (error) { return sendError(res, 500, 'run_create_failed', 'Could not stage this analysis run.'); }
+  try { runInTransaction(stageRun); } catch (error) {
+    for (const file of writtenFiles) { try { fs.unlinkSync(file); } catch { /* already gone */ } }
+    return sendError(res, 500, 'run_create_failed', 'Could not stage this analysis run.');
+  }
   logEvent(project.id, req.user.id, 'analysis_run', runId, 'created', { assetCount: req.files.length, contextType: contextUrl ? 'linked' : 'unlinked' });
   setImmediate(() => processRun(runId));
   const assets = db.prepare('SELECT id, original_name, state FROM analysis_assets WHERE run_id = ?').all(runId);
@@ -425,7 +478,11 @@ app.get('/api/findings', requireAuth, (req, res) => {
     FROM draft_findings f JOIN analysis_runs r ON r.id = f.run_id JOIN analysis_assets a ON a.id = f.asset_id
     LEFT JOIN handoffs h ON h.finding_id = f.id WHERE r.project_id = ? ${state ? 'AND f.state = ?' : ''}
     ORDER BY f.created_at DESC, f.id DESC LIMIT ?`).all(...(state ? [projectId, state, limit] : [projectId, limit]));
-  res.json({ items: rows.map(serializeFinding) });
+  /* The caller must be able to tell a full queue from a truncated one — showing a slice
+     while the badge counts the whole thing is how findings go unreviewed. */
+  const total = db.prepare(`SELECT COUNT(*) AS count FROM draft_findings f JOIN analysis_runs r ON r.id = f.run_id
+    WHERE r.project_id = ? ${state ? 'AND f.state = ?' : ''}`).get(...(state ? [projectId, state] : [projectId])).count;
+  res.json({ items: rows.map(serializeFinding), total });
 });
 app.patch('/api/findings/:id', requireAuth, requireCsrf, (req, res) => {
   const finding = db.prepare(`SELECT f.*, r.project_id, r.created_by FROM draft_findings f JOIN analysis_runs r ON r.id = f.run_id WHERE f.id = ?`).get(req.params.id);
@@ -550,7 +607,10 @@ function snagFilters(req, projectId) {
     due_date: "CASE WHEN s.due_date IS NULL THEN 1 ELSE 0 END, s.due_date ASC",
     priority: "CASE s.priority WHEN 'Critical' THEN 0 WHEN 'High' THEN 1 WHEN 'Medium' THEN 2 ELSE 3 END, s.created_at DESC"
   };
-  return { where: clauses.join(' AND '), params, orderBy: sorts[req.query.sort] || sorts.created_desc };
+  /* hasOwn, not a bare lookup: `?sort=constructor` would otherwise resolve up the
+     prototype chain and interpolate native-code source into ORDER BY, throwing a 500. */
+  const requested = String(req.query.sort || '');
+  return { where: clauses.join(' AND '), params, orderBy: Object.hasOwn(sorts, requested) ? sorts[requested] : sorts.created_desc };
 }
 /* Returns null having already answered 403 when the caller may not read this project;
    hands back the authorised project so exports need not re-run the membership query. */
@@ -568,7 +628,10 @@ app.get('/api/snags', requireAuth, (req, res) => {
   const { where, params, orderBy } = snagFilters(req, projectId);
   const limit = Math.min(Math.max(Number(req.query.limit) || 200, 1), 500);
   const rows = db.prepare(`SELECT s.* FROM snags s WHERE ${where} ORDER BY ${orderBy} LIMIT ?`).all(...params, limit);
-  res.json({ items: rows.map(serializeSnag) });
+  /* Board columns count what they were given, so the caller needs to know when that is
+     less than what matched — otherwise the tiles and the board disagree in silence. */
+  const total = db.prepare(`SELECT COUNT(*) AS count FROM snags s WHERE ${where}`).get(...params).count;
+  res.json({ items: rows.map(serializeSnag), total });
 });
 app.post('/api/snags', requireAuth, requireCsrf, (req, res) => {
   const projectId = String(req.body?.projectId || '');

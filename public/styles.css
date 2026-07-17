@@ -178,6 +178,8 @@ textarea.short { min-height: 64px; }
 .badge.High { background: var(--high-bg); color: var(--high); }
 .badge.Medium { background: var(--med-bg); color: var(--med); }
 .badge.Low { background: var(--low-bg); color: var(--low); }
+/* The model did not rate this one — read as absent, not as a middling judgement. */
+.badge.Unrated { background: #eef2f1; color: var(--muted); font-style: italic; font-weight: 600; }
 .state-chip { font: 500 .72rem var(--font-mono); text-transform: uppercase; letter-spacing: .07em; padding: 3px 9px; border-radius: 5px; background: #eef2f1; color: var(--muted); }
 .state-chip.approved { background: var(--low-bg); color: var(--low); }
 .state-chip.rejected { background: var(--crit-bg); color: var(--crit); }

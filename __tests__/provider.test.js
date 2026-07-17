@@ -77,6 +77,37 @@ test('a quota rejection is reported in the provider\'s own words, not as a gener
   expect(run.assets[0].upstream_error).toContain('Daily usage limit reached');
 }, 30000);
 
+test('active specification clauses are actually sent to the provider, as the consent says', async () => {
+  await request(app).post('/api/spec-clauses').set('Cookie', session.cookie).set('X-CSRF-Token', session.csrf)
+    .send({ projectId, name: 'Fire-stopping at penetrations', description: 'Penetrations through fire-rated construction shall be sealed with an approved system.', sourceName: 'Division 07', sourcePage: '14', active: true }).expect(201);
+  await request(app).post('/api/spec-clauses').set('Cookie', session.cookie).set('X-CSRF-Token', session.csrf)
+    .send({ projectId, name: 'Draft clause not yet active', description: 'Should never reach the provider.', active: false }).expect(201);
+
+  let sentQuery = null;
+  global.fetch = async (url, options) => {
+    if (String(url).endsWith('/api/v1/analyze')) { sentQuery = JSON.parse(options.body).query; return json(202, { jobId: 'job_spec' }); }
+    return json(200, { status: 'completed', analysis: { findings: [] } });
+  };
+  await runAnalysis();
+  expect(sentQuery).toContain('Fire-stopping at penetrations');       // active clause reaches the AI
+  expect(sentQuery).toContain('Division 07, p. 14');                  // with its source, so a citation is checkable
+  expect(sentQuery).not.toContain('Draft clause not yet active');     // inactive clauses stay out
+}, 30000);
+
+test('a finding the model did not rate is left unrated rather than defaulted to Medium', async () => {
+  global.fetch = async url => {
+    if (String(url).endsWith('/api/v1/analyze')) return json(202, { jobId: 'job_sev' });
+    return json(200, { status: 'completed', analysis: { findings: [
+      { title: 'Unrated issue', description: 'The model gave no severity.', severity: 'INFO' },
+      { title: 'Critical issue', description: 'Rated by the model.', severity: 'CRITICAL' }
+    ] } });
+  };
+  const run = await runAnalysis();
+  const byTitle = Object.fromEntries(run.findings.map(f => [f.title, f.priority]));
+  expect(byTitle['Unrated issue']).toBeNull();   // 'INFO' means the model declined to rate it
+  expect(byTitle['Critical issue']).toBe('Critical');
+}, 30000);
+
 test('cancelling mid-run never uploads the withdrawn image, and the cancel is not recomputed away', async () => {
   const submitted = [];
   global.fetch = async (url, options) => {

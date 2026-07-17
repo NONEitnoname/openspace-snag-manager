@@ -1,4 +1,4 @@
-const state = { user: null, csrf: null, projects: [], selectedFiles: [], activeRun: null, poller: null, snags: [], snagView: 'board', drawerSnag: null, currentTab: 'dashboard', viewerReady: false, linkedViewerUrl: null, viewerLoadIsOurs: false };
+const state = { user: null, csrf: null, projects: [], selectedFiles: [], activeRun: null, poller: null, snags: [], snagsTotal: 0, snagView: 'board', drawerSnag: null, currentTab: 'dashboard', viewerReady: false, linkedViewerUrl: null, viewerLoadIsOurs: false };
 const $ = id => document.getElementById(id);
 const SNAG_STATUSES = ['Open', 'In Progress', 'Resolved', 'Closed'];
 const STATUS_COLORS = { Open: '#7ec4bc', 'In Progress': '#3d9c92', Resolved: '#167a70', Closed: '#0b4f49' };
@@ -266,9 +266,12 @@ function onViewerLoad() {
 }
 /* Says only what can actually be observed: whether the frame is showing the capture whose
    link is in the box. Whether the user is signed in to OpenSpace is not knowable here. */
+/* Reports our own bookkeeping — that the link in the box is what we last pointed the frame
+   at — and not that OpenSpace served it. The frame is cross-origin, so a redirect to its
+   login page, an expired link, or an empty capture are all invisible from here. */
 function updateViewerStatus() {
   const linked = contextMatchesViewer();
-  $('viewerStatus').textContent = linked ? 'Capture loaded' : 'No capture loaded';
+  $('viewerStatus').textContent = linked ? 'Linked to capture' : 'Not linked';
   $('viewerStatus').classList.toggle('live', linked);
 }
 function contextMatchesViewer() {
@@ -460,7 +463,9 @@ function renderRun(run) {
     head.append(el('strong', null, asset.original_name), el('span', 'run-state', asset.state.replace(/_/g, ' ')));
     const rail = el('div', 'progress-rail');
     const fill = el('div', 'progress-fill');
-    fill.style.width = `${asset.state === 'completed' ? 100 : asset.state === 'failed' ? 100 : asset.progress || (asset.state === 'processing' ? 5 : 0)}%`;
+    /* Only ever draw progress the provider actually reported. A nominal 5% invented a
+       number, and filling the rail on failure drew a finished job. */
+    fill.style.width = `${asset.state === 'completed' ? 100 : Number(asset.progress) || 0}%`;
     rail.appendChild(fill);
     const msg = el('p', 'progress-msg', asset.state === 'failed' ? (asset.upstream_error || 'Analysis failed.') : asset.state === 'completed' ? 'Analysis complete.' : asset.progress_message || (asset.state === 'queued' ? 'Waiting for a pipeline slot…' : 'Contacting MimaarAI…'));
     item.append(head, rail, msg);
@@ -470,10 +475,22 @@ function renderRun(run) {
   $('cancelRun').classList.toggle('hidden', done);
   if (done) {
     window.clearTimeout(state.poller);
-    $('runSummary').textContent = run.findings.length
-      ? `${run.findings.length} draft finding(s) are waiting in the review queue. Nothing becomes a snag without a human decision.`
-      : 'The run finished without any draft findings.';
-    if (run.findings.length) { refreshReviewBadge(); toast(`${run.findings.length} draft finding(s) ready for review.`); }
+    /* "No findings" and "we could not look" are different answers, and only one of them
+       means the images are clean. Never let a failed run read as a clean bill of health. */
+    const failed = run.assets.filter(asset => asset.state === 'failed').length;
+    const analysed = run.assets.filter(asset => asset.state === 'completed').length;
+    if (run.findings.length) {
+      $('runSummary').textContent = `${run.findings.length} draft finding(s) are waiting in the review queue. Nothing becomes a snag without a human decision.`
+        + (failed ? ` ${failed} image(s) could not be analysed — those are not covered.` : '');
+      refreshReviewBadge();
+      toast(`${run.findings.length} draft finding(s) ready for review.`);
+    } else if (failed) {
+      $('runSummary').textContent = `No findings, because ${failed} image(s) could not be analysed — see the reason on each above. This is not a clean result: those images were never checked.`;
+    } else if (run.state === 'cancelled') {
+      $('runSummary').textContent = 'Run cancelled. Any image still queued was never sent.';
+    } else {
+      $('runSummary').textContent = `MimaarAI analysed ${analysed} image(s) and reported nothing. That is its opinion, not an inspection sign-off.`;
+    }
   } else { $('runSummary').textContent = ''; }
 }
 async function loadRun() {
@@ -503,9 +520,13 @@ function findingCard(finding) {
   const heading = el('div', 'finding-heading');
   const titleWrap = el('div');
   titleWrap.append(el('h3', null, finding.title), el('span', `state-chip ${finding.state}`, FINDING_STATE_LABELS[finding.state] || finding.state));
-  heading.append(titleWrap, el('span', `badge ${finding.priority || 'Medium'}`, finding.priority || 'Medium'));
+  /* An absent severity is not a Medium one: say the model did not rate it and let the
+     reviewer decide, rather than paint a default that looks like a judgement. */
+  heading.append(titleWrap, el('span', `badge ${finding.priority || 'Unrated'}`, finding.priority || 'Unrated'));
   const description = el('p', null, finding.description || 'No description returned.');
-  const meta = el('p', 'muted', [finding.category || 'Uncategorised', finding.trade || 'No trade', finding.original_name, finding.confidence != null ? `confidence ${(finding.confidence * 100).toFixed(0)}%` : null].filter(Boolean).join(' · '));
+  const meta = el('p', 'muted', [finding.category || 'Uncategorised', finding.trade || 'No trade', finding.original_name,
+    /* The model's own number, not a calibrated score — say whose it is. */
+    finding.confidence != null ? `model-reported confidence ${(finding.confidence * 100).toFixed(0)}%` : null].filter(Boolean).join(' · '));
   body.append(heading, description, meta);
   if (finding.recommendation) body.appendChild(el('p', 'hint', `Recommendation: ${finding.recommendation}`));
   const claims = Array.isArray(finding.code_claims) ? finding.code_claims : [];
@@ -532,13 +553,18 @@ function findingCard(finding) {
 async function loadFindings() {
   const list = $('findingList'); list.replaceChildren();
   try {
-    const query = new URLSearchParams({ projectId: currentProject() });
+    const query = new URLSearchParams({ projectId: currentProject(), limit: '100' });
     if ($('findingState').value) query.set('state', $('findingState').value);
     const data = await api(`/api/findings?${query}`);
     if (!data.items.length) {
       const empty = el('p', 'empty');
       empty.append(el('strong', null, 'Nothing waiting here.'), document.createTextNode('Run an analysis from Capture & analyze and its draft findings will queue up for review.'));
       list.appendChild(empty); return;
+    }
+    /* The tab badge counts every waiting finding, so a silently sliced list would leave
+       the difference unreviewed with the UI insisting this is the queue. */
+    if (data.total > data.items.length) {
+      list.appendChild(el('p', 'warning', `Showing the ${data.items.length} most recent of ${data.total}. Decide on these and the rest will follow.`));
     }
     data.items.forEach(item => list.appendChild(findingCard(item)));
   } catch (error) { toast(error.message, true); }
@@ -579,6 +605,7 @@ async function loadSnags() {
   try {
     const data = await api(`/api/snags?${snagQuery()}`);
     state.snags = data.items;
+    state.snagsTotal = data.total;
     $('exportCsv').href = `/api/snags/export/csv?${snagQuery()}`;
     $('exportPdf').href = `/api/snags/export/pdf?${snagQuery()}`;
     renderSnags();
@@ -588,6 +615,11 @@ function renderSnags() {
   if (state.snagView === 'board') renderBoard(); else renderList();
   $('snagBoard').classList.toggle('hidden', state.snagView !== 'board');
   $('snagList').classList.toggle('hidden', state.snagView !== 'list');
+  /* Column counts and the dashboard tiles are counting different things the moment this
+     view is capped, so say when it is rather than let them quietly disagree. */
+  const truncated = state.snagsTotal > state.snags.length;
+  $('snagTruncated').textContent = truncated ? `Showing ${state.snags.length} of ${state.snagsTotal} matching snags — narrow the filters, or use the exports for the full register.` : '';
+  $('snagTruncated').classList.toggle('hidden', !truncated);
 }
 function snagCardNode(snag) {
   const card = el('article', 'snag-card');
@@ -743,7 +775,7 @@ async function loadSpecs() {
     const data = await api(`/api/spec-clauses?projectId=${encodeURIComponent(currentProject())}`);
     if (!data.items.length) {
       const empty = el('p', 'empty');
-      empty.append(el('strong', null, 'No reviewed clauses yet.'), document.createTextNode('An admin can add verified specification context for the AI to cross-reference.'));
+      empty.append(el('strong', null, 'No clauses yet.'), document.createTextNode('An admin can add project clauses here. Active ones are sent to MimaarAI with every analysis to check the image against.'));
       list.appendChild(empty); return;
     }
     for (const item of data.items) {

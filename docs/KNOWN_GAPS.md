@@ -35,13 +35,32 @@ replicas. This client tolerates it (see the polling loop and `__tests__/provider
 but the provider should move job state to shared storage — otherwise every client must
 carry the same workaround, and a job whose replica dies is lost silently.
 
-## 3. Screen capture is verified, but not through the browser's own picker
+## 3. Nothing in the repo tests the capture path
 
-`captureViewer()` is proven correct end-to-end against a synthetic frame: the crop
-lands pixel-accurately on the viewer rect (869×554, no surrounding page chrome).
-What automation cannot drive is Chromium's "choose what to share" dialog, so the
-picker → real tab frame leg has only been reasoned about, not executed. Worth one
-manual pass on a real OpenSpace capture.
+`captureViewer()` and `cropToViewer()` have **no automated coverage at all**. The test
+suite is server-side supertest only (no jsdom, no browser runner), so nothing committed
+here exercises them — do not read the suite passing as evidence they work.
+
+They were checked by hand in a browser during development, by stubbing `getDisplayMedia`
+with a canvas stream: the crop landed on the viewer rect (869×554) with no surrounding
+page chrome. That was a live session, not a test, and it is gone. Chromium's "choose what
+to share" dialog cannot be driven from automation either, so the picker → real tab frame
+leg has only ever been reasoned about.
+
+Worth a manual pass on a real capture, and worth a browser-based test runner if this
+becomes more than a pilot.
+
+## 3b. The app cannot tell whether OpenSpace actually served a capture
+
+The viewer status says "Linked to capture", which means only that the link in the box is
+what we last pointed the frame at. The frame is cross-origin: if OpenSpace redirects to
+its login page, the share link has expired, or the capture is empty, the app cannot see
+it and the status will not change. `contextMatchesViewer()` is bookkeeping, not proof.
+
+Related: navigation *inside* the frame is only detected when it is a full document load.
+If OpenSpace's player moves between captures with client-side routing, no `load` event
+fires, the link is not marked stale, and a capture could be attributed to the previous
+location. The "OpenSpace home" button and full navigations are covered; SPA routing is not.
 
 ## 4. Signing in to OpenSpace inside the frame is unverified with a real account
 
@@ -68,7 +87,23 @@ OpenSpace by hand. There is no OpenSpace API integration, and `payload_hash` rec
 what *would* have been sent. OpenSpace remains the system of record; this app never
 claims to have created anything there.
 
-## 6. Bootstrap admin still enabled
+## 6. Legacy resolution dates on the trend chart are inferred, not recorded
+
+`resolved_at` was added after the fact. Snags already Resolved/Closed at that point had
+only `updated_at` to go on, so migration v1 (`db/database.js`) filled them from it once.
+Those rows are plotted on the "closed out" line at their last-edited date, which may be
+later than the day they actually closed, and the chart does not distinguish them from
+genuinely stamped rows. Bounded: one-time, only rows predating the column, and nothing
+infers a resolution date ever again.
+
+## 7. The audit log has no reader
+
+`audit_events` records every decision — including, since this pass, what the AI produced
+per asset and what it failed on. There is no route and no UI to read it back; the Admin
+tab only issues invites. For a pilot whose product is the audit trail, that is a real
+hole: today the only way to answer "why is this snag here" is `sqlite3` on the volume.
+
+## 8. Bootstrap admin still enabled
 
 `BOOTSTRAP_ADMIN_EMAIL` / `BOOTSTRAP_ADMIN_PASSWORD` are still set on Railway.
 They are a no-op while a user exists, but should be removed from the service

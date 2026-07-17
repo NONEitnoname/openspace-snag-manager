@@ -65,7 +65,7 @@
         <section class="card chart-card"><h2>Snags by status</h2><div id="chartStatus" class="chart"></div></section>
         <section class="card chart-card"><h2>Snags by priority</h2><div id="chartPriority" class="chart"></div></section>
         <section class="card chart-card wide"><h2>Fourteen-day flow — logged vs closed out</h2><div id="chartTrend" class="chart"></div></section>
-        <section class="card chart-card"><h2>Snags by trade</h2><div id="chartTrade" class="chart"></div></section>
+        <section class="card chart-card"><h2>Snags by trade — top 8</h2><div id="chartTrade" class="chart"></div></section>
         <section class="card chart-card"><h2>AI review pipeline</h2><div id="chartFindings" class="chart"></div></section>
       </div>
     </section>
@@ -83,7 +83,7 @@
           <div class="viewer-head">
             <div><p class="eyebrow">Live 360° capture</p><h2 id="viewerTitle">Site viewer</h2></div>
             <div class="viewer-head-actions">
-              <span id="viewerStatus" class="viewer-status">No capture loaded</span>
+              <span id="viewerStatus" class="viewer-status">Not linked</span>
               <button id="viewerHome" type="button">OpenSpace home</button>
               <button id="captureView" type="button" class="primary">Capture this view</button>
             </div>
@@ -100,7 +100,7 @@
             <div><p class="eyebrow">Evidence</p><h2 id="evidenceTitle">Stage for review</h2></div>
             <label class="file-picker small">Capture the view, paste a screenshot (Ctrl+V), or choose files<input id="analysisImages" type="file" accept="image/jpeg,image/png,image/webp" multiple></label>
             <div id="imagePreviews" class="previews" aria-live="polite"></div>
-            <label class="consent"><input id="analysisConsent" type="checkbox"> I confirm these images and the selected specification context may be sent to MimaarAI for this run.</label>
+            <label class="consent"><input id="analysisConsent" type="checkbox"> I confirm these images, and the project's active specification clauses, may be sent to MimaarAI for this run.</label>
             <button id="startAnalysis" type="button" class="primary">Send to MimaarAI</button>
             <p id="analysisMessage" class="form-message" role="status"></p>
           </div>
@@ -137,14 +137,15 @@
           <button id="newSnag" class="primary">+ New snag</button>
         </div>
       </div>
+      <p id="snagTruncated" class="warning hidden" role="status"></p>
       <div id="snagBoard" class="board" aria-live="polite"></div>
       <div id="snagList" class="snag-table-wrap hidden" aria-live="polite"></div>
     </section>
 
     <section id="panel-specs" role="tabpanel" aria-labelledby="tab-specs" class="panel">
       <div class="two-column">
-        <section class="card"><p class="eyebrow">Verified context only</p><h2>Specification clauses</h2><div id="specList" class="stack compact"></div></section>
-        <form id="specForm" class="card stack admin-only"><p class="eyebrow">Admin</p><h2>Add a reviewed clause</h2><label>Name <input id="specName" required maxlength="250"></label><label>Requirement <textarea id="specDescription" required maxlength="5000"></textarea></label><label>Category <input id="specCategory" maxlength="80"></label><label>Priority <select id="specPriority"><option value="">None</option><option>Critical</option><option>High</option><option>Medium</option><option>Low</option></select></label><label>Source / revision <input id="specSource" maxlength="250" placeholder="Division 09, Rev C"></label><label>Page <input id="specPage" maxlength="80"></label><label class="consent"><input id="specActive" type="checkbox"> Mark verified and active</label><button class="primary" type="submit">Save clause</button><p id="specMessage" class="form-message" role="status"></p></form>
+        <section class="card"><p class="eyebrow">Entered by an admin</p><h2>Specification clauses</h2><p class="hint">Active clauses are sent to MimaarAI with every analysis, for it to check the image against. Nothing here is verified by this app — an admin is asserting it.</p><div id="specList" class="stack compact"></div></section>
+        <form id="specForm" class="card stack admin-only"><p class="eyebrow">Admin</p><h2>Add a clause</h2><label>Name <input id="specName" required maxlength="250"></label><label>Requirement <textarea id="specDescription" required maxlength="5000"></textarea></label><label>Category <input id="specCategory" maxlength="80"></label><label>Priority <select id="specPriority"><option value="">None</option><option>Critical</option><option>High</option><option>Medium</option><option>Low</option></select></label><label>Source / revision <input id="specSource" maxlength="250" placeholder="Division 09, Rev C"></label><label>Page <input id="specPage" maxlength="80"></label><label class="consent"><input id="specActive" type="checkbox"> Active — send this clause to MimaarAI with every analysis</label><button class="primary" type="submit">Save clause</button><p id="specMessage" class="form-message" role="status"></p></form>
       </div>
     </section>
 

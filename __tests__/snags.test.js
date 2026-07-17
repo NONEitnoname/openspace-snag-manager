@@ -214,6 +214,36 @@ test('any project member may progress a snag they did not raise (snags are colla
   expect(updated.body.status).toBe('In Progress');
 });
 
+test('list responses report the true total so the UI can admit truncation', async () => {
+  await createSnag(); await createSnag(); await createSnag();
+  const capped = await request(app).get(`/api/snags?projectId=${projectId}&limit=2`).set('Cookie', admin.cookie).expect(200);
+  expect(capped.body.items).toHaveLength(2);
+  expect(capped.body.total).toBeGreaterThan(2);   // the count that matched, not the slice returned
+  const findings = await request(app).get(`/api/findings?projectId=${projectId}`).set('Cookie', admin.cookie).expect(200);
+  expect(findings.body).toHaveProperty('total');
+});
+
+test('an unknown sort key falls back instead of reaching SQL through the prototype chain', async () => {
+  for (const sort of ['constructor', '__proto__', 'toString', 'bogus']) {
+    await request(app).get(`/api/snags?projectId=${projectId}&sort=${sort}`).set('Cookie', admin.cookie).expect(200);
+  }
+});
+
+test('changing a password revokes the sessions the old one opened', async () => {
+  const invite = await authed(request(app).post('/api/admin/invites'), admin).send({ email: 'rotate@example.com', role: 'inspector' }).expect(201);
+  const firstToken = new URL(invite.body.inviteUrl).searchParams.get('invite');
+  const first = await request(app).post('/api/auth/accept-invite').send({ token: firstToken, password: 'first-password-12' }).expect(201);
+  const stolen = first.headers['set-cookie'][0].split(';')[0];
+  await request(app).get('/api/auth/me').set('Cookie', stolen).expect(200); // the attacker's cookie works
+
+  // The admin reissues an invite so the user resets their password.
+  const reissued = await authed(request(app).post('/api/admin/invites'), admin).send({ email: 'rotate@example.com', role: 'inspector' }).expect(201);
+  const secondToken = new URL(reissued.body.inviteUrl).searchParams.get('invite');
+  await request(app).post('/api/auth/accept-invite').send({ token: secondToken, password: 'second-password-12' }).expect(201);
+
+  await request(app).get('/api/auth/me').set('Cookie', stolen).expect(401); // and no longer does
+});
+
 test('stats endpoint returns full shape', async () => {
   const stats = await request(app).get(`/api/projects/${projectId}/stats`).set('Cookie', admin.cookie).expect(200);
   expect(stats.body.snags.byStatus).toHaveProperty('Open');
