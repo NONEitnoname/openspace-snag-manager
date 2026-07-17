@@ -1,4 +1,4 @@
-const state = { user: null, csrf: null, projects: [], selectedFiles: [], activeRun: null, poller: null, snags: [], snagView: 'board', drawerSnag: null, currentTab: 'dashboard', viewerReady: false };
+const state = { user: null, csrf: null, projects: [], selectedFiles: [], activeRun: null, poller: null, snags: [], snagView: 'board', drawerSnag: null, currentTab: 'dashboard', viewerReady: false, linkedViewerUrl: null, viewerLoadIsOurs: false };
 const $ = id => document.getElementById(id);
 const SNAG_STATUSES = ['Open', 'In Progress', 'Resolved', 'Closed'];
 const STATUS_COLORS = { Open: '#7ec4bc', 'In Progress': '#3d9c92', Resolved: '#167a70', Closed: '#0b4f49' };
@@ -236,6 +236,7 @@ function renderTrend(days) {
 const OPENSPACE_DEFAULT_ORIGIN = 'https://ksa.openspace.ai';
 function readStored(key) { try { return localStorage.getItem(key); } catch { return null; } }
 function writeStored(key, value) { try { localStorage.setItem(key, value); } catch { /* private mode */ } }
+function clearStored(key) { try { localStorage.removeItem(key); } catch { /* private mode */ } }
 function openspaceOrigin() {
   const saved = readStored('openspace_origin');
   return saved && /^https:\/\/([a-z0-9-]+\.)*openspace\.ai$/.test(saved) ? saved : OPENSPACE_DEFAULT_ORIGIN;
@@ -247,13 +248,38 @@ function parseOpenspaceUrl(value) {
   }
   return parsed;
 }
-/* Signed out, OpenSpace redirects this to its login page; signed in, to the user's orgs.
-   Either way it is the right place to land, and the session it establishes is the one the
-   capture iframe below will use. */
+/* The share link is a claim about where an image was taken, so it must not outlive the
+   viewer moving somewhere else. A cross-origin frame's URL is unreadable, but we do know
+   what we navigated it to, and its load event tells us when it navigates again. */
+function setViewerSrc(url, linked) {
+  state.viewerLoadIsOurs = true;
+  state.linkedViewerUrl = linked ? url : null;
+  $('openspaceViewer').src = url;
+  updateViewerStatus();
+}
+function onViewerLoad() {
+  if (state.viewerLoadIsOurs) { state.viewerLoadIsOurs = false; return; }
+  /* The viewer navigated on its own — whatever link is in the box no longer describes
+     what is on screen. Prefer asking again over attributing evidence to the wrong spot. */
+  state.linkedViewerUrl = null;
+  updateViewerStatus();
+}
+/* Says only what can actually be observed: whether the frame is showing the capture whose
+   link is in the box. Whether the user is signed in to OpenSpace is not knowable here. */
+function updateViewerStatus() {
+  const linked = contextMatchesViewer();
+  $('viewerStatus').textContent = linked ? 'Capture loaded' : 'No capture loaded';
+  $('viewerStatus').classList.toggle('live', linked);
+}
+function contextMatchesViewer() {
+  return Boolean(state.linkedViewerUrl) && state.linkedViewerUrl === $('openspaceUrl').value.trim();
+}
+function captureContextIsSound() {
+  return Boolean($('unlinkedReason').value.trim()) || contextMatchesViewer();
+}
+/* Signed out, OpenSpace redirects this to its login page; signed in, to the user's orgs. */
 function loadOpenspaceHome() {
-  $('openspaceViewer').src = `${openspaceOrigin()}/`;
-  $('viewerStatus').textContent = 'Sign in to OpenSpace';
-  $('viewerStatus').classList.remove('live');
+  setViewerSrc(`${openspaceOrigin()}/`, false);
 }
 function initViewer() {
   if (state.viewerReady) return;
@@ -263,7 +289,6 @@ function initViewer() {
   if (saved) { $('openspaceUrl').value = saved; previewViewer({ silent: true }); }
   else loadOpenspaceHome();
 }
-function hasContext() { return Boolean($('openspaceUrl').value.trim() || $('unlinkedReason').value.trim()); }
 function validateContext() {
   const url = $('openspaceUrl').value.trim(); const reason = $('unlinkedReason').value.trim();
   if (!url && !reason) throw new Error('Attach an OpenSpace link or explain why the photos are unlinked.');
@@ -274,15 +299,20 @@ function previewViewer({ silent = false } = {}) {
     const url = $('openspaceUrl').value.trim();
     if (!url) throw new Error('Paste an OpenSpace share link to load the viewer.');
     const parsed = parseOpenspaceUrl(url);
-    $('openspaceViewer').src = parsed.toString();
+    $('openspaceUrl').value = parsed.toString();
+    setViewerSrc(parsed.toString(), true);
     $('openCapture').href = parsed.toString(); $('openCapture').classList.remove('hidden');
-    $('viewerStatus').textContent = 'Capture loaded';
-    $('viewerStatus').classList.add('live');
     writeStored('openspace_url', parsed.toString());
     writeStored('openspace_origin', parsed.origin);
     $('openHome').href = `${parsed.origin}/`;
   } catch (error) {
-    if (silent) { loadOpenspaceHome(); return; } /* a stored link that no longer parses */
+    if (silent) {
+      /* A stored link that no longer parses must not sit in the box looking like context. */
+      $('openspaceUrl').value = '';
+      clearStored('openspace_url');
+      loadOpenspaceHome();
+      return;
+    }
     toast(error.message, true);
   }
 }
@@ -335,37 +365,49 @@ async function captureViewer() {
     bitmap.close?.();
     const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', 0.92));
     if (!blob) throw new Error('The captured frame could not be encoded.');
-    stageFiles([new File([blob], `openspace-view-${new Date().toISOString().replace(/[:.]/g, '-')}.jpg`, { type: 'image/jpeg' })]);
-    if (surface !== 'browser') toast('Captured the whole screen or window, not just the viewer, because that is what you chose to share. It may show more than the site — check the thumbnail before sending.', true);
-    else if (!crop) toast('Captured this tab, but the viewer was too small or scrolled out of view to crop to, so the whole tab is staged. Check the thumbnail before sending.', true);
-    else if (!hasContext()) {
-      /* The viewer is a full OpenSpace session, so people navigate to a capture inside the
-         frame without ever pasting its link. Cross-origin, we cannot read where they are —
-         ask now, while they are still standing on the spot. */
-      toast('Viewer captured. Copy this capture\'s share link from OpenSpace into the box above so the finding can be traced back to this spot — or say why it is unlinked.', true);
-      $('openspaceUrl').focus();
-    } else toast('Viewer captured and staged. Tick consent, then send it to MimaarAI.');
+    /* Everything said about this capture belongs inside the callback: if the frame did not
+       make it into the tray, stageFiles has already said why, and a note about how the
+       capture looks would only talk over it. */
+    stageFiles([new File([blob], `openspace-view-${new Date().toISOString().replace(/[:.]/g, '-')}.jpg`, { type: 'image/jpeg' })], () => {
+      /* What the image shows and where it was taken are separate problems, and both can
+         be wrong at once — say every note that applies rather than only the first. */
+      const notes = [];
+      if (surface !== 'browser') notes.push('It shows the whole screen or window you chose to share, not just the viewer, so it may show more than the site — check the thumbnail');
+      else if (!crop) notes.push('The viewer was too small or scrolled out of view to crop to, so the whole tab is staged — check the thumbnail');
+      const contextMissing = !captureContextIsSound();
+      /* The viewer is a full OpenSpace session, so people navigate away from the link they
+         loaded. Cross-origin we cannot read where they ended up — ask now, while they are
+         still standing on the spot, rather than record the wrong location. */
+      if (contextMissing) notes.push('Paste the share link for the capture you are on so the finding can be traced back to this spot, or say why it is unlinked');
+      if (notes.length) toast(`Captured. ${notes.join('. ')}.`, true);
+      else toast('Viewer captured and staged. Tick consent, then send it to MimaarAI.');
+      if (contextMissing) $('openspaceUrl').focus();
+    });
   } catch (error) { toast(error.message || 'The view could not be captured.', true); }
 }
 const MAX_STAGED = 5;
-function stageFiles(files) {
+/* Owns every message about what did and did not get staged. Callers must not announce
+   success themselves — a success toast fired after this returns overwrites the warning
+   and tells the inspector their evidence is staged when it was dropped. Pass what you
+   want said on the happy path instead; it runs only when every file landed. */
+function stageFiles(files, onAllStaged) {
   const valid = files.filter(file => ['image/jpeg', 'image/png', 'image/webp'].includes(file.type) && file.size <= 8 * 1024 * 1024);
-  if (valid.length !== files.length) toast('Only JPEG, PNG, or WebP images up to 8 MB were staged.', true);
-  if (!valid.length) return;
-  /* Count what the cap actually drops, including images already staged — evidence must
-     never disappear from the tray without the inspector being told. */
-  const dropped = Math.max(0, state.selectedFiles.length + valid.length - MAX_STAGED);
-  state.selectedFiles = [...state.selectedFiles, ...valid].slice(0, MAX_STAGED);
-  renderFilePreviews();
-  if (dropped) toast(`${dropped} image(s) were not staged — a run carries at most ${MAX_STAGED}. Send these, then start another run.`, true);
+  const room = Math.max(0, MAX_STAGED - state.selectedFiles.length);
+  const accepted = valid.slice(0, room);
+  const problems = [];
+  if (valid.length !== files.length) problems.push(`${files.length - valid.length} file(s) are not JPEG, PNG, or WebP under 8 MB`);
+  if (valid.length !== accepted.length) problems.push(`${valid.length - accepted.length} image(s) exceed the ${MAX_STAGED}-image limit for one run`);
+  if (accepted.length) { state.selectedFiles = [...state.selectedFiles, ...accepted]; renderFilePreviews(); }
+  if (problems.length) toast(`Not staged: ${problems.join(', and ')}.`, true);
+  else onAllStaged?.();
+  return accepted.length;
 }
 function handlePaste(event) {
   if (state.currentTab !== 'analyze') return;
   const files = Array.from(event.clipboardData?.items || []).filter(item => item.type.startsWith('image/')).map(item => item.getAsFile()).filter(Boolean);
   if (!files.length) return;
   event.preventDefault();
-  stageFiles(files);
-  toast('Screenshot staged from the clipboard.');
+  stageFiles(files, () => toast('Screenshot staged from the clipboard.'));
 }
 /* One object URL per File, revoked when the file leaves the tray — re-rendering the tray
    must not mint a second URL for an image that is already showing. */
@@ -735,6 +777,9 @@ function bindEvents() {
   $('logoutButton').addEventListener('click', logout);
   $('loadViewer').addEventListener('click', () => previewViewer());
   $('viewerHome').addEventListener('click', loadOpenspaceHome);
+  $('openspaceViewer').addEventListener('load', onViewerLoad);
+  /* Typing a link is not loading it: the frame still shows whatever it showed before. */
+  $('openspaceUrl').addEventListener('input', updateViewerStatus);
   $('captureView').addEventListener('click', captureViewer);
   document.addEventListener('paste', handlePaste);
   $('analysisImages').addEventListener('change', chooseFiles);

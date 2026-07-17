@@ -30,6 +30,9 @@ app.use(express.json({ limit: '1mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
 
 function now() { return new Date().toISOString(); }
+/* Matches SQLite's datetime('now') byte for byte, so a column written from both JS and SQL
+   still compares and sorts as a plain string. */
+function sqlNow() { return new Date().toISOString().replace('T', ' ').slice(0, 19); }
 function sha256(value) { return crypto.createHash('sha256').update(value).digest('hex'); }
 function randomToken() { return crypto.randomBytes(32).toString('base64url'); }
 function cookieOptions() { return { httpOnly: true, sameSite: 'lax', secure: process.env.NODE_ENV === 'production', path: '/', maxAge: 12 * 60 * 60 * 1000 }; }
@@ -578,7 +581,7 @@ app.post('/api/snags', requireAuth, requireCsrf, (req, res) => {
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .run(snagId, projectId, humanRef(), values.title, values.description, values.category || null, values.priority || 'Medium', status,
       values.trade || null, values.location || null, values.floor || null, values.zone || null, values.assignee || null, values.due_date || null,
-      values.root_cause || null, values.recommendation || null, ['Resolved', 'Closed'].includes(status) ? now() : null, req.user.id);
+      values.root_cause || null, values.recommendation || null, ['Resolved', 'Closed'].includes(status) ? sqlNow() : null, req.user.id);
   logEvent(projectId, req.user.id, 'snag', snagId, 'created');
   res.status(201).json(serializeSnag(db.prepare('SELECT * FROM snags WHERE id = ?').get(snagId)));
 });
@@ -648,16 +651,19 @@ app.patch('/api/snags/:id', requireAuth, requireCsrf, (req, res) => {
   if (error) return sendError(res, 400, 'snag_invalid', error);
   if ((values.title === null) || (values.description === null)) return sendError(res, 400, 'snag_invalid', 'Title and description cannot be empty.');
   if (!Object.keys(values).length) return sendError(res, 400, 'update_empty', 'Provide at least one editable field.');
+  /* What the request actually asked to change, captured before the server derives
+     anything — the audit trail should not credit a person with a stamp we wrote. */
+  const requestedFields = Object.keys(values);
   /* Stamp the moment the snag actually closed out, so later edits cannot re-date it.
      Reopening clears it: a snag that goes back to Open has no resolution date. */
   if (values.status !== undefined && values.status !== snag.status) {
     const closedOut = ['Resolved', 'Closed'].includes(values.status);
-    if (closedOut && !snag.resolved_at) values.resolved_at = now();
+    if (closedOut && !snag.resolved_at) values.resolved_at = sqlNow();
     if (!closedOut) values.resolved_at = null;
   }
   const assignments = Object.keys(values).map(k => `${k} = ?`).join(', ');
   db.prepare(`UPDATE snags SET ${assignments}, version = version + 1, updated_at = datetime('now') WHERE id = ?`).run(...Object.values(values), snag.id);
-  logEvent(snag.project_id, req.user.id, 'snag', snag.id, 'edited', { fields: Object.keys(values) });
+  logEvent(snag.project_id, req.user.id, 'snag', snag.id, 'edited', { fields: requestedFields });
   res.json(serializeSnag(db.prepare('SELECT * FROM snags WHERE id = ?').get(snag.id)));
 });
 app.delete('/api/snags/:id', requireAuth, requireCsrf, requireRole('admin'), (req, res) => {
@@ -720,10 +726,13 @@ app.get('/api/projects/:id/stats', requireAuth, (req, res) => {
   const findingsByState = { needs_review: 0, approved: 0, rejected: 0, handed_off: 0 };
   for (const row of db.prepare('SELECT f.state, COUNT(*) AS count FROM draft_findings f JOIN analysis_runs r ON r.id = f.run_id WHERE r.project_id = ? GROUP BY f.state').all(project.id)) findingsByState[row.state] = row.count;
   const runsTotal = db.prepare('SELECT COUNT(*) AS count FROM analysis_runs WHERE project_id = ?').get(project.id).count;
-  /* date(), not datetime(): the buckets below are calendar days, so a rolling 13x24h
-     cutoff would truncate the oldest bucket at the current time of day. */
-  const trend = db.prepare(`SELECT date(created_at) AS day, COUNT(*) AS created FROM snags WHERE project_id = ? AND date(created_at) >= date('now', '-13 days') GROUP BY day`).all(project.id);
-  const resolvedTrend = db.prepare(`SELECT date(resolved_at) AS day, COUNT(*) AS resolved FROM snags WHERE project_id = ? AND resolved_at IS NOT NULL AND date(resolved_at) >= date('now', '-13 days') GROUP BY day`).all(project.id);
+  /* date('now','-13 days'), not datetime(): the buckets below are calendar days, so a
+     rolling 13x24h cutoff would truncate the oldest bucket at the current time of day.
+     The column is compared bare rather than wrapped in date() so the index still applies —
+     'YYYY-MM-DD HH:MM:SS' >= 'YYYY-MM-DD' is the same cutoff as a string comparison.
+     A NULL resolved_at fails the comparison, which is what we want. */
+  const trend = db.prepare(`SELECT date(created_at) AS day, COUNT(*) AS created FROM snags WHERE project_id = ? AND created_at >= date('now', '-13 days') GROUP BY day`).all(project.id);
+  const resolvedTrend = db.prepare(`SELECT date(resolved_at) AS day, COUNT(*) AS resolved FROM snags WHERE project_id = ? AND resolved_at >= date('now', '-13 days') GROUP BY day`).all(project.id);
   const days = [];
   for (let i = 13; i >= 0; i -= 1) {
     const day = new Date(Date.now() - i * 86400000).toISOString().slice(0, 10);

@@ -152,16 +152,17 @@ test('resolution is stamped when it happens, and later edits do not re-date it',
   expect(created.body.resolved_at).toBeNull();
 
   const resolved = await authed(request(app).patch(`/api/snags/${created.body.id}`), admin).send({ version: created.body.version, status: 'Resolved' }).expect(200);
-  expect(resolved.body.resolved_at).toBeTruthy();
+  // Same shape as every other timestamp in the schema, so the column compares as a string.
+  expect(resolved.body.resolved_at).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
 
   // An unrelated edit moves updated_at but must leave the resolution date alone.
-  db.prepare("UPDATE snags SET resolved_at = '2026-07-01T09:00:00.000Z' WHERE id = ?").run(created.body.id);
+  db.prepare("UPDATE snags SET resolved_at = '2026-07-01 09:00:00' WHERE id = ?").run(created.body.id);
   const edited = await authed(request(app).patch(`/api/snags/${created.body.id}`), admin).send({ version: resolved.body.version, assignee: 'Someone else' }).expect(200);
-  expect(edited.body.resolved_at).toBe('2026-07-01T09:00:00.000Z');
+  expect(edited.body.resolved_at).toBe('2026-07-01 09:00:00');
 
   // Closing an already-resolved snag keeps the original resolution moment.
   const closed = await authed(request(app).patch(`/api/snags/${created.body.id}`), admin).send({ version: edited.body.version, status: 'Closed' }).expect(200);
-  expect(closed.body.resolved_at).toBe('2026-07-01T09:00:00.000Z');
+  expect(closed.body.resolved_at).toBe('2026-07-01 09:00:00');
 
   // Reopening clears it: an open snag has no resolution date.
   const reopened = await authed(request(app).patch(`/api/snags/${created.body.id}`), admin).send({ version: closed.body.version, status: 'Open' }).expect(200);
@@ -183,6 +184,21 @@ test('the trend counts a resolution on the day it happened, not the day it was l
   const on = (trend, day) => trend.find(d => d.day === day).resolved;
   expect(on(after, fiveDaysAgo) - on(before, fiveDaysAgo)).toBe(1); // counted on the day it closed out
   expect(on(after, today) - on(before, today)).toBe(0);             // not on the day it was last edited
+});
+
+test('the audit trail records what the user changed, not what the server derived', async () => {
+  const created = await createSnag();
+  await authed(request(app).patch(`/api/snags/${created.body.id}`), admin).send({ version: created.body.version, status: 'Resolved' }).expect(200);
+  const event = db.prepare("SELECT details FROM audit_events WHERE entity_id = ? AND action = 'edited' ORDER BY created_at DESC LIMIT 1").get(created.body.id);
+  const fields = JSON.parse(event.details).fields;
+  expect(fields).toEqual(['status']);          // what the request asked for
+  expect(fields).not.toContain('resolved_at'); // a stamp the server wrote, not the user
+});
+
+test('data migrations are recorded and never re-run', async () => {
+  const versions = db.prepare('SELECT version FROM schema_migrations ORDER BY version').all().map(r => r.version);
+  expect(versions).toEqual([1, 2]);
+  expect(db.prepare('SELECT COUNT(*) AS count FROM schema_migrations').get().count).toBe(versions.length);
 });
 
 test('any project member may progress a snag they did not raise (snags are collaborative)', async () => {

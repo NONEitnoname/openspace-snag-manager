@@ -183,17 +183,46 @@ db.exec(`
   CREATE UNIQUE INDEX IF NOT EXISTS idx_snags_source_finding ON snags(source_finding_id) WHERE source_finding_id IS NOT NULL;
 `);
 
-for (const migration of [
+function transaction(fn) {
+  db.exec('BEGIN');
+  try { const result = fn(); db.exec('COMMIT'); return result; }
+  catch (error) { db.exec('ROLLBACK'); throw error; }
+}
+
+/* Adding a column is idempotent by catch, so these can run on every boot. */
+for (const alter of [
   'ALTER TABLE analysis_assets ADD COLUMN progress INTEGER NOT NULL DEFAULT 0',
   'ALTER TABLE analysis_assets ADD COLUMN progress_message TEXT',
   'ALTER TABLE snags ADD COLUMN resolved_at TEXT'
 ]) {
-  try { db.exec(migration); } catch { /* column already exists */ }
+  try { db.exec(alter); } catch { /* column already exists */ }
 }
-/* Snags resolved before resolved_at existed have only updated_at to go on. That is the
-   approximation this column was added to stop making, so backfill it once and never
-   infer again — a row edited after resolution carries a resolution date that is too late. */
-db.exec("UPDATE snags SET resolved_at = updated_at WHERE resolved_at IS NULL AND status IN ('Resolved','Closed')");
+
+/* Data migrations are NOT idempotent, so each runs exactly once and is recorded in
+   schema_migrations — the table this schema has always declared. Re-running one of these
+   on every boot is how a backfill quietly turns into corruption. */
+const DATA_MIGRATIONS = [
+  {
+    version: 1,
+    /* Snags resolved before resolved_at existed have only updated_at to go on. That is
+       the approximation the column exists to stop making: fill it from the best signal
+       available this once, and never infer a resolution date again. */
+    apply: () => db.exec("UPDATE snags SET resolved_at = updated_at WHERE resolved_at IS NULL AND status IN ('Resolved','Closed')")
+  },
+  {
+    version: 2,
+    /* The first resolved_at stamps were written with JS toISOString ('...T...Z') while
+       every other timestamp here is SQLite datetime('now'). Two shapes in one column do
+       not compare as strings, so normalise the stragglers onto the schema's convention. */
+    apply: () => db.exec("UPDATE snags SET resolved_at = datetime(resolved_at) WHERE resolved_at IS NOT NULL AND resolved_at LIKE '%T%'")
+  }
+];
+const migrationApplied = db.prepare('SELECT 1 FROM schema_migrations WHERE version = ?');
+const recordMigration = db.prepare('INSERT INTO schema_migrations (version) VALUES (?)');
+for (const migration of DATA_MIGRATIONS) {
+  if (migrationApplied.get(migration.version)) continue;
+  transaction(() => { migration.apply(); recordMigration.run(migration.version); });
+}
 
 function id(prefix) {
   return `${prefix}_${crypto.randomUUID()}`;
@@ -218,12 +247,6 @@ function ensurePilotProject() {
 function audit({ projectId = null, actorId = null, entityType, entityId, action, details = {} }) {
   db.prepare('INSERT INTO audit_events (id, project_id, actor_id, entity_type, entity_id, action, details) VALUES (?, ?, ?, ?, ?, ?, ?)')
     .run(id('evt'), projectId, actorId, entityType, entityId, action, JSON.stringify(details));
-}
-
-function transaction(fn) {
-  db.exec('BEGIN');
-  try { const result = fn(); db.exec('COMMIT'); return result; }
-  catch (error) { db.exec('ROLLBACK'); throw error; }
 }
 
 function close() { db.close(); }
